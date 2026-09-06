@@ -14,6 +14,7 @@
       - secure-edge.service
       - otelcol-contrib.service
       - wazuh-agent.service
+      - auditd.service
       - fail2ban.service
 
 - name: Require every core service to be active
@@ -29,12 +30,81 @@
   loop_control:
     label: "{{ item }}"
 
+- name: Require CIS time, job, and compatibility-log services
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ item }}"
+  register: verify_cis_unit
+  changed_when: false
+  failed_when: verify_cis_unit.stdout != "active"
+  loop:
+    - chrony.service
+    - cron.service
+    - rsyslog.service
+  loop_control:
+    label: "{{ item }}"
+
+- name: Require systemd-timesyncd to stay off
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - systemd-timesyncd.service
+  register: verify_timesyncd
+  changed_when: false
+  failed_when: verify_timesyncd.stdout == "active"
+
 - name: Read TCP listeners
   ansible.builtin.shell: "set -o pipefail && ss -H -ltn | awk '{print $4}'"
   args:
     executable: /bin/bash
   register: verify_tcp_listeners
   changed_when: false
+
+- name: Read the effective SSH hardening controls
+  ansible.builtin.command: /usr/sbin/sshd -T
+  register: verify_sshd_effective
+  changed_when: false
+
+- name: Require the CIS SSH controls to be effective
+  ansible.builtin.assert:
+    that:
+      - "'banner /etc/issue.net' in (verify_sshd_effective.stdout | lower)"
+      - "'disableforwarding yes' in (verify_sshd_effective.stdout | lower)"
+      - "'maxstartups 10:30:60' in (verify_sshd_effective.stdout | lower)"
+      - "'hmac-sha2-512-etm@openssh.com' in (verify_sshd_effective.stdout | lower)"
+      - "'hmac-sha2-256-etm@openssh.com' in (verify_sshd_effective.stdout | lower)"
+
+- name: Inspect CIS-protected host files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - {path: /etc/motd, mode: "0644", group: root}
+    - {path: /etc/issue, mode: "0644", group: root}
+    - {path: /etc/issue.net, mode: "0644", group: root}
+    - {path: /etc/crontab, mode: "0600", group: root}
+    - {path: /etc/cron.hourly, mode: "0700", group: root}
+    - {path: /etc/cron.daily, mode: "0700", group: root}
+    - {path: /etc/cron.weekly, mode: "0700", group: root}
+    - {path: /etc/cron.monthly, mode: "0700", group: root}
+    - {path: /etc/cron.d, mode: "0700", group: root}
+    - {path: /etc/sudoers.d/99-secure-platform-cis, mode: "0440", group: root}
+    - {path: /var/log/sudo.log, mode: "0640", group: adm}
+  register: verify_cis_files
+
+- name: Require CIS host files to be root-owned with managed permissions
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == item.item.group
+      - item.stat.mode == item.item.mode
+    fail_msg: "Unsafe owner or mode for {{ item.item.path }}"
+  loop: "{{ verify_cis_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
 
 - name: Identify unexpected non-loopback TCP listeners
   ansible.builtin.set_fact:
@@ -162,6 +232,70 @@
       - "'forgejo' in verify_fail2ban_status.stdout"
     fail_msg: "fail2ban is running without the sshd or forgejo jail: {{ verify_fail2ban_status.stdout }}"
 
+- name: Read the deployed host collector configuration
+  ansible.builtin.slurp:
+    src: /etc/otelcol-contrib/config.yaml
+  register: verify_host_collector_config
+
+- name: Require the security and observability routing boundary
+  ansible.builtin.assert:
+    that:
+      - "'journald/operations' in (verify_host_collector_config.content | b64decode)"
+      - "'filelog/security' not in (verify_host_collector_config.content | b64decode)"
+      - "'/var/log/suricata/' not in (verify_host_collector_config.content | b64decode)"
+      - "'/var/log/zeek/' not in (verify_host_collector_config.content | b64decode)"
+      - "'/var/log/silk/' not in (verify_host_collector_config.content | b64decode)"
+
+- name: Check Wazuh security source paths and managed rules
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: verify_wazuh_security_paths
+  loop:
+    - /var/log/audit
+    - /var/log/suricata/platform
+    - /var/log/zeek
+    - "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node/config/wazuh_manager/rules/platform_security_rules.xml"
+
+- name: Require Wazuh security source paths and rules
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "Missing Wazuh security source or rule path: {{ item.item }}"
+  loop: "{{ verify_wazuh_security_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read the deployed platform security rules
+  ansible.builtin.slurp:
+    src: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node/config/wazuh_manager/rules/platform_security_rules.xml"
+  register: verify_platform_rules
+
+- name: Require deployed rules to cover the representative security events
+  ansible.builtin.assert:
+    that:
+      - "'id=\"100400\"' in verify_platform_rules_src"
+      - "'nft-input-drop' in verify_platform_rules_src"
+      - "'id=\"100403\"' in verify_platform_rules_src"
+      - "'id=\"100405\"' in verify_platform_rules_src"
+      - "'id=\"100406\"' in verify_platform_rules_src"
+      - "'id=\"100407\"' in verify_platform_rules_src"
+      - "'id=\"100410\"' in verify_platform_rules_src"
+      - "'id=\"100412\"' in verify_platform_rules_src"
+      - "'id=\"100413\"' in verify_platform_rules_src"
+      - "'nft-input-drop' in verify_journal_fixtures"
+      - "'Failed publickey' in verify_journal_fixtures"
+      - "'Authentication failed' in verify_journal_fixtures"
+      - "'ModSecurity' in verify_journal_fixtures"
+      - "'\"DownstreamStatus\":429' in verify_journal_fixtures"
+      - "'\"sensor.type\":\"suricata\"' in verify_json_fixtures"
+      - "'\"zeek.log\":\"notice.log\"' in verify_json_fixtures"
+      - "'\"zeek.log\":\"intel.log\"' in verify_json_fixtures"
+      - "'type=SYSCALL' in verify_audit_fixture"
+    fail_msg: Deployed Wazuh rules or fixtures no longer cover the expected security events
+  vars:
+    verify_platform_rules_src: "{{ verify_platform_rules.content | b64decode }}"
+    verify_journal_fixtures: "{{ lookup('file', role_path ~ '/../../tests/fixtures/wazuh-journal-events.log') }}"
+    verify_json_fixtures: "{{ lookup('file', role_path ~ '/../../tests/fixtures/wazuh-security-events.ndjson') }}"
+    verify_audit_fixture: "{{ lookup('file', role_path ~ '/../../tests/fixtures/audit-security-event.log') }}"
 - name: Read the installed Trivy version
   ansible.builtin.command:
     argv:
@@ -205,11 +339,18 @@
     label: "{{ item.item.value.name }}"
   when: trivy_verify_scan_results | bool
 
+- name: Warn when the host firewall confirmation gate is still open
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: firewall_lockdown_confirm is false. The managed nftables
+      ingress policy has not been activated; verify the provider firewall.
+  when: not (firewall_lockdown_confirm | bool)
+
 - name: Show the final security boundary summary
   ansible.builtin.debug:
     msg:
       - "Public ingress: TCP/{{ ssh_port }} (OpenSSH), TCP/{{ forgejo_ssh_port }} (Forgejo SSH), TCP/{{ public_port }} (Traefik TLS)."
       - "SSH: public-key only, PermitRootLogin no, AllowUsers {{ admin_user }} on {{ ssh_port }}. Forgejo SSH on {{ forgejo_ssh_port }}."
       - "Backends: loopback only; rootless Podman accounts have disjoint subuid/subgid ranges."
-      - "Telemetry: Traefik and scrapecast OTLP + WAF stub_status + host metrics/journal + per-account Podman stats -> host collector -> SigNoz."
-      - "Security: host Wazuh agent ingests rootless container journals, FIM, sensor outputs, and per-account Trivy image findings. fail2ban jails sshd and Forgejo into inet f2b-table plus the WAF deny list."
+      - "Telemetry: OTLP app signals, Traefik access telemetry, WAF/app/host/Podman metrics, and warning-level service health -> SigNoz."
+      - "Security: Wazuh ingests filtered auth/firewall/container journals, auditd, package changes, selected IDS metadata, FIM, and Trivy findings. fail2ban owns automated blocking."

@@ -196,10 +196,13 @@
     mode: "0644"
   notify: Restart secure WAF
 
-- name: Remove CRS exclusions that existed for Forgejo smart HTTP
-  ansible.builtin.file:
-    path: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
-    state: absent
+- name: Render CRS exclusions for Forgejo repository file views
+  ansible.builtin.template:
+    src: waf-crs-exclusions.conf.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
   notify: Restart secure WAF
 
 - name: Render the Authentik stack

@@ -18,8 +18,30 @@
     name: systemd-journald.service
     state: restarted
 
+- name: Load host audit rules
+  ansible.builtin.command: /sbin/augenrules --load
+  changed_when: true
+
 - name: Restart secure edge
   ansible.builtin.systemd_service:
     name: secure-edge.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure WAF for logging
+  ansible.builtin.systemd_service:
+    name: secure-waf.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure Authentik for logging
+  ansible.builtin.systemd_service:
+    name: secure-auth.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure Forgejo for logging
+  ansible.builtin.systemd_service:
+    name: secure-forgejo.service
     state: restarted
   failed_when: false

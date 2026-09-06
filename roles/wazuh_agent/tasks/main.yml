@@ -75,6 +75,19 @@
     wazuh_agent_conf: "{{ wazuh_agent_home }}/etc/ossec.conf"
     wazuh_agent_etc: "{{ wazuh_agent_home }}/etc"
 
+- name: Read the effective stock Wazuh agent configuration
+  ansible.builtin.slurp:
+    src: "{{ wazuh_agent_conf }}"
+  register: wazuh_agent_stock_config
+
+- name: Require stock inventory, rootcheck, and SCA capabilities
+  ansible.builtin.assert:
+    that:
+      - "'syscollector' in (wazuh_agent_stock_config.content | b64decode)"
+      - "'<rootcheck>' in (wazuh_agent_stock_config.content | b64decode)"
+      - "'<sca>' in (wazuh_agent_stock_config.content | b64decode)"
+    fail_msg: "The Wazuh beta package no longer supplies the expected syscollector, rootcheck, or SCA configuration."
+
 - name: Point the host agent at the loopback manager
   ansible.builtin.replace:
     path: "{{ wazuh_agent_conf }}"
@@ -106,6 +119,32 @@
 - name: Remember the manager etc directory on the host
   ansible.builtin.set_fact:
     wazuh_agent_manager_etc: "{{ (wazuh_agent_manager_inspect.stdout | from_json)[0].Mounts | selectattr('Destination', 'equalto', '/var/wazuh-manager/etc') | map(attribute='Source') | first }}"
+    wazuh_agent_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
+
+- name: Create the managed Wazuh security rules directory
+  ansible.builtin.file:
+    path: "{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules"
+    state: directory
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0750"
+
+- name: Install platform security rules for Wazuh 5
+  ansible.builtin.template:
+    src: platform-security-rules.xml.j2
+    dest: "{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules/platform_security_rules.xml"
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0644"
+  notify: Restart secure Wazuh for security rules
+
+- name: Validate the platform security rule XML
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "import xml.etree.ElementTree as ET; ET.parse('{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules/platform_security_rules.xml')"
+  changed_when: false
 
 - name: Read the manager authd password
   ansible.builtin.slurp:
@@ -118,22 +157,22 @@
   ansible.builtin.command:
     argv:
       - /usr/bin/systemd-run
-      - --user
       - --collect
       - --wait
       - --pipe
+      - "--uid={{ service_accounts.wazuh.name }}"
+      - "--gid={{ service_accounts.wazuh.name }}"
       - -p
       - LimitMEMLOCK=infinity
+      - -p
+      - LimitNOFILE=655360
+      - "--setenv=HOME=/var/lib/{{ service_accounts.wazuh.name }}"
+      - "--setenv=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.wazuh.uid }}"
       - /usr/bin/podman
       - exec
       - wazuh-manager
       - /bin/cat
       - /var/wazuh-manager/etc/authd.pass
-  become: true
-  become_user: "{{ service_accounts.wazuh.name }}"
-  environment:
-    HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
-    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
   register: wazuh_agent_manager_authd_exec
   when: wazuh_agent_manager_authd.content is not defined
   changed_when: false
@@ -220,6 +259,29 @@
   failed_when: false
   notify: Restart Wazuh agent
 
+- name: Check whether unattended-upgrades logs exist
+  ansible.builtin.stat:
+    path: /var/log/unattended-upgrades
+  register: wazuh_agent_unattended_log_dir
+
+- name: Remember optional package-update log availability
+  ansible.builtin.set_fact:
+    wazuh_agent_has_unattended_logs: "{{ wazuh_agent_unattended_log_dir.stat.isdir | default(false) }}"
+
+- name: Remove an unfiltered location-first journald collector
+  ansible.builtin.replace:
+    path: "{{ wazuh_agent_conf }}"
+    regexp: '\s*<localfile>\s*<location>journald</location>\s*<log_format>journald</log_format>\s*</localfile>'
+    replace: ''
+  notify: Restart Wazuh agent
+
+- name: Remove an unfiltered format-first journald collector
+  ansible.builtin.replace:
+    path: "{{ wazuh_agent_conf }}"
+    regexp: '\s*<localfile>\s*<log_format>journald</log_format>\s*<location>journald</location>\s*</localfile>'
+    replace: ''
+  notify: Restart Wazuh agent
+
 - name: Add container journals, host logs, and sensor files
   ansible.builtin.blockinfile:
     path: "{{ wazuh_agent_conf }}"
@@ -235,7 +297,7 @@
     insertbefore: "  </syscheck>"
     block: |2
           <directories check_all="yes" realtime="yes">{{ wazuh_stack_fim_paths | join(',') }}</directories>
-          <directories check_all="yes" realtime="yes">/etc/ssh,/etc/fail2ban,/etc/nftables.conf,/etc/sudoers,/etc/sudoers.d</directories>
+          <directories check_all="yes" realtime="yes">{{ wazuh_host_fim_paths | join(',') }}</directories>
           <ignore type="sregex">.*/(\.git|cache|data|logs|queue|storage|volumes|work)/.*</ignore>
   notify: Restart Wazuh agent
 
@@ -278,6 +340,33 @@
 - name: Apply host agent enrollment changes
   ansible.builtin.meta: flush_handlers
 
+- name: Confirm the manager can read the mounted platform rules
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-run
+      - --collect
+      - --wait
+      - --pipe
+      - "--uid={{ service_accounts.wazuh.name }}"
+      - "--gid={{ service_accounts.wazuh.name }}"
+      - -p
+      - LimitMEMLOCK=infinity
+      - -p
+      - LimitNOFILE=655360
+      - "--setenv=HOME=/var/lib/{{ service_accounts.wazuh.name }}"
+      - "--setenv=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.wazuh.uid }}"
+      - /usr/bin/podman
+      - exec
+      - wazuh-manager
+      - /bin/grep
+      - -F
+      - 'id="100400"'
+      - /wazuh-config-mount/etc/rules/platform_security_rules.xml
+  register: wazuh_agent_platform_rules_mount
+  changed_when: false
+  retries: 10
+  delay: 5
+  until: "'100400' in (wazuh_agent_platform_rules_mount.stdout | default(''))"
 - name: Wait until the manager lists this host
   ansible.builtin.command:
     argv:

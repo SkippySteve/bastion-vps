@@ -1,0 +1,6 @@
+Sep 05 23:00:01 secure-vps kernel: nft-input-drop IN=eth0 SRC=198.51.100.23 DST=192.0.2.10 PROTO=TCP DPT=22
+Sep 05 23:00:02 secure-vps sshd[1000]: Failed publickey for invalid user test from 198.51.100.23 port 50000 ssh2
+Sep 05 23:00:03 secure-vps authentik-server[1001]: Authentication failed for test user
+Sep 05 23:00:04 secure-vps forgejo[1002]: Failed authentication attempt for user test
+Sep 05 23:00:05 secure-vps modsecurity-crs[1003]: ModSecurity: Access denied with code 403 (phase 2). [id "949110"]
+Sep 05 23:00:06 secure-vps traefik[1004]: {"DownstreamStatus":429,"RequestHost":"git.example.test"}

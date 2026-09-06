@@ -1,38 +1,97 @@
+{% for unit in wazuh_journal_units %}
         <localfile>
           <location>journald</location>
           <log_format>journald</log_format>
+          <filter field="_SYSTEMD_UNIT">^{{ unit | regex_escape }}$</filter>
+        </localfile>
+{% endfor %}
+{% for identifier in wazuh_journal_identifiers %}
+        <localfile>
+          <location>journald</location>
+          <log_format>journald</log_format>
+          <filter field="SYSLOG_IDENTIFIER">^{{ identifier | regex_escape }}$</filter>
+        </localfile>
+{% endfor %}
+        <localfile>
+          <location>journald</location>
+          <log_format>journald</log_format>
+          <filter field="_TRANSPORT">^kernel$</filter>
+          <filter field="MESSAGE">^nft-input-drop </filter>
+        </localfile>
+{% for container in wazuh_security_container_filters %}
+        <localfile>
+          <location>journald</location>
+          <log_format>journald</log_format>
+          <filter field="CONTAINER_NAME">^{{ container.name | regex_escape }}$</filter>
+          <filter field="MESSAGE">{{ container.message }}</filter>
+        </localfile>
+{% endfor %}
+        <localfile>
+          <location>journald</location>
+          <log_format>journald</log_format>
+          <filter field="CONTAINER_NAME">^traefik$</filter>
+          <filter field="MESSAGE">("DownstreamStatus":(401|403|429)|TLS handshake error|invalid request)</filter>
         </localfile>
         <localfile>
-          <location>/var/log/auth.log</location>
-          <log_format>syslog</log_format>
-        </localfile>
-        <localfile>
-          <location>/var/log/syslog</location>
-          <log_format>syslog</log_format>
+          <location>/var/log/audit/audit.log</location>
+          <log_format>audit</log_format>
+          <label key="security.source">auditd</label>
         </localfile>
         <localfile>
           <location>/var/log/fail2ban.log</location>
           <log_format>syslog</log_format>
+          <label key="security.source">fail2ban</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/auth.log</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">rsyslog-auth</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/syslog</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">rsyslog-system</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/sudo.log</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">sudo</label>
         </localfile>
         <localfile>
           <location>/var/log/dpkg.log</location>
           <log_format>syslog</log_format>
+          <label key="security.source">packages</label>
         </localfile>
         <localfile>
-          <location>/var/log/suricata/*/eve.json</location>
+          <location>/var/log/apt/history.log</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">packages</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/apt/term.log</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">packages</label>
+        </localfile>
+{% if wazuh_agent_has_unattended_logs | default(false) | bool %}
+        <localfile>
+          <location>/var/log/unattended-upgrades/*.log</location>
+          <log_format>syslog</log_format>
+          <label key="security.source">packages</label>
+        </localfile>
+{% endif %}
+        <localfile>
+          <location>/var/log/suricata/platform/eve-security.json</location>
           <log_format>json</log_format>
           <label key="sensor.type">suricata</label>
         </localfile>
+{% for zeek_log in wazuh_zeek_logs %}
         <localfile>
-          <location>/var/log/zeek/*/current/*.log</location>
+          <location>/var/log/zeek/*/current/{{ zeek_log }}</location>
           <log_format>json</log_format>
           <label key="sensor.type">zeek</label>
+          <label key="zeek.log">{{ zeek_log }}</label>
         </localfile>
-        <localfile>
-          <location>/var/log/silk/rwflowpack.log</location>
-          <log_format>syslog</log_format>
-          <label key="sensor.type">silk</label>
-        </localfile>
+{% endfor %}
         <localfile>
           <location>/var/log/trivy/*/events.ndjson</location>
           <log_format>json</log_format>

@@ -9,6 +9,13 @@ services:
       PORT: "{{ waf_http_port }}"
       WAF_STATUS_PORT: "{{ waf_status_port }}"
       MODSEC_RULE_ENGINE: "On"
+      MODSEC_AUDIT_ENGINE: "RelevantOnly"
+      MODSEC_AUDIT_LOG: "/dev/stdout"
+      MODSEC_AUDIT_LOG_FORMAT: "JSON"
+      MODSEC_AUDIT_LOG_TYPE: "Serial"
+      # A/H/Z retain transaction metadata and rule messages without request
+      # or response headers and bodies, which may contain credentials.
+      MODSEC_AUDIT_LOG_PARTS: "AHZ"
       BLOCKING_PARANOIA: "1"
       DETECTION_PARANOIA: "1"
       ANOMALY_INBOUND: "5"
@@ -25,3 +32,4 @@ services:
       - ./default.conf.template:/etc/nginx/templates/conf.d/default.conf.template:ro
       - ./fail2ban-deny.conf:/etc/nginx/fail2ban-deny.conf:ro
       - ./wazuh-root-ca.pem:/etc/nginx/wazuh-root-ca.pem:ro
+      - ./REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro

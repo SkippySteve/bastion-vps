@@ -8,6 +8,10 @@ admin_uid: 2000
 # The first run deliberately leaves the existing firewall untouched. Set this
 # true only after proving that SSH on 22 and HTTPS on 443 both work.
 firewall_lockdown_confirm: false
+# PAM-stack and root-password changes can remove recovery access if a provider
+# image has unexpected local customization. Enable only with a tested console.
+pam_hardening_confirm: false
+root_account_lock_confirm: false
 ssh_port: 22
 public_port: 443
 forgejo_ssh_port: 2222
@@ -95,6 +99,54 @@ wazuh_stack_fim_paths:
   - "/var/lib/{{ service_accounts.wazuh.name }}/stacks"
   - "/var/lib/{{ service_accounts.runner.name }}/runner"
   - "/var/lib/{{ service_accounts.scrapecast.name }}/stacks"
+wazuh_host_fim_paths:
+  - /etc/ssh
+  - /etc/fail2ban
+  - /etc/nftables.conf
+  - /etc/sudoers
+  - /etc/sudoers.d
+  - /etc/systemd/system
+  - /etc/otelcol-contrib
+  - /etc/apt
+  - /usr/share/keyrings
+  - /etc/sysctl.d
+  - /etc/pam.d
+  - /etc/security
+  - /etc/login.defs
+  - /etc/default/useradd
+  - /etc/crontab
+  - /etc/cron.d
+  - /etc/cron.hourly
+  - /etc/cron.daily
+  - /etc/cron.weekly
+  - /etc/cron.monthly
+  - /etc/motd
+  - /etc/issue
+  - /etc/issue.net
+  - /etc/suricata
+  - /etc/silk
+  - /etc/logrotate.d
+  - /etc/passwd
+  - /etc/group
+  - /etc/shadow
+  - /usr/local/bin/trivy
+  - /usr/local/libexec/trivy-platform-scan
+  - "/var/lib/{{ service_accounts.edge.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.edge.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.waf.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.waf.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.auth.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.auth.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.forgejo.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.forgejo.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.signoz.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.signoz.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.wazuh.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.wazuh.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.runner.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.runner.name }}/.config/otelcol-podman.yml"
+  - "/var/lib/{{ service_accounts.scrapecast.name }}/.config/containers"
+  - "/var/lib/{{ service_accounts.scrapecast.name }}/.config/otelcol-podman.yml"
 
 # Loopback-only service ports
 authentik_http_port: 19000
@@ -176,6 +228,65 @@ silk_ipfix_base_port: 18001
 enable_suricata: true
 enable_zeek: true
 enable_silk: true
+
+# Security events go to Wazuh. SigNoz keeps metrics, traces, direct OTLP
+# application logs, and warning/error service-health journals.
+signoz_operations_journal_units:
+  - otelcol-contrib.service
+  - secure-edge.service
+  - secure-waf.service
+  - secure-auth.service
+  - secure-forgejo.service
+  - secure-signoz.service
+  - secure-wazuh.service
+  - secure-scrapecast.service
+  - wazuh-agent.service
+  - auditd.service
+wazuh_journal_units:
+  - ssh.service
+  - auditd.service
+  - fail2ban.service
+wazuh_journal_identifiers:
+  - sshd
+  - sudo
+  - su
+  - useradd
+  - usermod
+  - userdel
+  - groupadd
+  - groupmod
+  - groupdel
+  - passwd
+  - polkitd
+  - cron
+  - CRON
+  - chronyd
+  - rsyslogd
+wazuh_security_container_filters:
+  - name: authentik-server
+    message: "(?i)(login|logout|auth|mfa|token|permission|policy|provider|source|user|group|admin|failed|denied)"
+  - name: authentik-worker
+    message: "(?i)(auth|token|permission|policy|provider|source|user|group|admin|failed|denied)"
+  - name: forgejo
+    message: "(?i)(login|auth|token|ssh|key|webhook|runner|repository|package|admin|user|permission|failed|denied)"
+  - name: modsecurity-crs
+    message: "(?i)(ModSecurity|Access denied|Warning|messages)"
+wazuh_suricata_event_types:
+  - alert
+  - anomaly
+  - tls
+  - ssh
+  # Suricata config calls this output module "files"; emitted JSON records
+  # use event_type "fileinfo".
+  - files
+wazuh_zeek_logs:
+  - notice.log
+  - intel.log
+  - signatures.log
+  - weird.log
+  - files.log
+  - ssl.log
+  - ssh.log
 
 # Suricata workers runmode uses one full pipeline thread per AF_PACKET
 # thread. Debian's default is auto (one per CPU) and will fill a small

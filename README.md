@@ -221,6 +221,41 @@ fail2ban watches host sshd and the Forgejo container journal. A ban lands in fai
 
 Two passes feels slow. It exists because a bad nftables policy with no console access is a brick. Setting `firewall_lockdown_confirm=false` later does **not** remove a policy that is already active.
 
+### CIS Debian 13 hardening and safety gates
+
+The base role installs the CIS-oriented login banners, chrony and cron services,
+protected cron paths, SSH forwarding/banner/MAC/startup controls, sudo logging,
+password-required operator sudo, a restricted `su` group, password-aging defaults,
+password quality/history configuration, rsyslog, and the journal-remote package.
+Audit records for these policy files and the corresponding journal/filesystem logs
+are ingested by the host Wazuh agent.
+
+Three groups of findings are deliberately not forced on a first deployment:
+
+- The native nftables rules are rendered and syntax-checked on every run, but
+  `firewall_lockdown_confirm` must remain false until SSH, Forgejo SSH, HTTPS, and
+  console recovery are proven. UFW and iptables findings are not applicable to
+  this nftables implementation; installing competing firewall managers is unsafe.
+  The selected policy defaults inbound and forwarded traffic to deny but leaves
+  outbound traffic allowed for DNS, NTP, ACME, package/image pulls, OIDC, and
+  telemetry. A literal default-deny-output check therefore remains a deliberate
+  availability tradeoff.
+- `pam_hardening_confirm` activates pwquality, password history, `use_authtok`, and
+  null-password removal only during a console-backed maintenance window. The
+  faillock policy is staged but its PAM stack entries remain a documented gap:
+  Debian has no safe generic way to merge them into an arbitrarily customized
+  provider PAM stack without risking loss of sudo and console authentication.
+- `root_account_lock_confirm` locks the local root password only after a tested
+  operator sudo session and provider console are available. SSH root login is
+  denied independently. Existing unrecognized `NOPASSWD` rules are not deleted;
+  the managed operator rule is password-required and loaded late.
+
+`systemd-journal-upload` stays disabled because it requires a separate remote
+journal endpoint and would duplicate the security-event path. Wazuh is the
+central event sink instead, including rsyslog auth/system logs and the sudo log.
+This intentionally leaves the literal journal-upload-active CIS check unmet while
+meeting the operational goal without adding an unconfigured network service.
+
 ### 5. Authentik accounts and admin apps
 
 Sign in at `https://auth.<domain>` as `akadmin` with `authentik_bootstrap_password`. Username and password already work. You do not need Google or any other OAuth source to use the rest of this stack.
@@ -379,7 +414,7 @@ Useful tags: `preflight`, `dns`, `base`, `platform`, `trivy`, `telemetry`, `sens
 
 Each rootless account has a locked password, `/usr/sbin/nologin`, no extra groups, no sudo, a private `0700` home, and a non-overlapping subordinate UID/GID range. Container root is that unprivileged host account. Authentik, SigNoz, and Wazuh share one account per stack because their supported Compose design needs a shared network and volumes. Independent components get their own account.
 
-Traefik does not get a Podman socket. Routes come from a static, read-only file. WAF traffic goes through the official OWASP CRS image, not Traefik's experimental Coraza WASM plugin.
+Traefik does not get a Podman socket. Routes come from a static, read-only file. WAF traffic goes through the official OWASP CRS image, not Traefik's experimental Coraza WASM plugin. On `git.<domain>`, CRS skips restricted-extension and restricted-file rules so Forgejo can show repository files such as `.sh`, `.cfg`, and `.gitignore`. Hidden `/.git` paths stay denied. Git over HTTPS smart HTTP stays blocked; clone on SSH port 2222.
 
 OpenSSH accepts public-key authentication for `ops` only. Root login and password authentication are disabled. `git@host:22` is not a host account. Clone with `ssh://git@git.<domain>:2222/owner/repo.git`.
 
@@ -395,10 +430,10 @@ A private address (typical Vagrant NAT) is not reachable from those servers. DNS
 |---|---|
 | Latency, traffic, errors | Traefik OTLP metrics, traces, and access logs to the host collector |
 | Saturation | Host CPU/memory/disk/network, WAF stub_status, and per-account Podman container stats |
-| Logs | Traefik app and access logs over OTLP (`service.name=traefik`), host and container journald, plus Suricata, Zeek, and SiLK files |
+| Logs | Direct OTLP application/access logs plus warning/error journals for platform and sensor service health |
 | App telemetry | Traefik OTLP logs over HTTP to `127.0.0.1:4318/v1/logs`. Metrics and traces over gRPC to `127.0.0.1:4317`. Scrapecast uses pasta `host.containers.internal:4318`. Prometheus scrape of Forgejo and Authentik. Authentik and Forgejo have no native traces. The CRS image has no request tracing module. |
 
-The host collector is the only app OTLP ingest. It queues and exports to SigNoz on loopback gRPC `127.0.0.1:14317`. Do not expose unauthenticated OTLP. For another host, use a mutually authenticated collector or a VPN and add a firewall rule on purpose.
+The host collector is the only app OTLP ingest. It queues and exports to SigNoz on loopback gRPC `127.0.0.1:14317`. Raw IDS, authentication, firewall, package-change, and WAF events are intentionally excluded. Do not expose unauthenticated OTLP. For another host, use a mutually authenticated collector or a VPN and add a firewall rule on purpose.
 
 Foundry's `replicas` field is 0-based: `replicas: 0` is one ClickHouse. `replicas: 1` starts a second node, and that pair will OOM an 8 GiB host during `system.metric_log` merges. The playbook caps the remaining node (`mem_limit` plus `max_server_memory_usage`) and deletes the ClickHouse and Keeper volumes when it sees the extra replica, then reforges Compose so only `clickhouse-0-0` remains. `podman-compose up` hangs forever on Foundry's `depends_on: service_healthy`, so the casting rewrites ClickHouse deps to `service_started` and vendors `histogramQuantile` instead of wget from GitHub at start. It waits for `SHOW CREATE TABLE signoz_traces.distributed_signoz_index_v3` before treating SigNoz as ready. The UI can listen before that table exists; that is the `failed to get tbl statement` error. Undersized hosts get a 4 GiB swap file. Postgres (users, dashboards) stays. Set `signoz_reset_telemetrystore: true` once if the store is already a single node with leftover two-replica schema.
 
@@ -412,15 +447,28 @@ Rootless Podman uses a per-user network. Those container-to-container links are 
 
 Capturing WAN and loopback duplicates observations. Size disks accordingly.
 
-A native Wazuh agent on the host covers the stacks through the system journal (including container logs), FIM of host and stack config, sensor JSON/logs, and normal rootcheck/inventory/vulnerability data. There is no privileged Wazuh process inside each vendor container. If a control literally requires an agent PID in every container, this design does not meet that wording.
+A native Wazuh agent on the host collects filtered SSH, sudo, identity, auditd, fail2ban, nftables, package, selected container, IDS, and WAF events. It does not forward every container or journal record. FIM covers host security policy, systemd, package/repository, sensor, telemetry, Trivy, rootless runtime, and stack configuration. There is no privileged Wazuh process inside each vendor container. If a control literally requires an agent PID in every container, this design does not meet that wording.
+
+Use **Threat Hunting** (the `wazuh-alerts-*` index) for rule-matched events. Start with `agent.name`, `rule.level`, `rule.groups`, `decoder.name`, and `location`, then pivot on `data.srcip`, `data.sensor.type`, `data.event_type`, CVE, signature, package, or container fields. Native journald metadata is used by the agent-side filters; Wazuh forwards those records in syslog form, so investigation uses the decoded program/message fields rather than `CONTAINER_NAME` or `_SYSTEMD_UNIT`.
+
+- `rule.groups:platform_auth` for SSH, sudo, Authentik, and Forgejo authentication activity.
+- `rule.groups:platform_firewall` for nftables drops and correlated scans.
+- `rule.groups:platform_waf` for ModSecurity and selected Traefik denials.
+- `rule.groups:platform_network_ids` for Suricata alerts/anomalies and selected Zeek detections.
+- `rule.groups:platform_control_health` for failed security controls.
+- `rule.groups:trivy` for image vulnerability, secret, and misconfiguration findings.
+
+Use Wazuh's dedicated **File Integrity Monitoring**, **Configuration Assessment**, and **Vulnerability Detection** views for those datasets. Wazuh indexes meaningful rule matches rather than every raw network flow. SiLK flow records remain queryable with SiLK tools under `/var/lib/silk/data`; they are not text logs and should not be copied into Wazuh. Existing fail2ban/nftables actions remain the only automatic blocking path; Wazuh active response is not enabled.
+
+Apply the complete routing boundary with `ansible-playbook site.yml --tags base,platform,telemetry,sensors,wazuh_agent,verify`. The base tag installs auditd and deterministic Podman journal tags; the other tags update both collectors, sensor outputs, Wazuh rules, and end-to-end checks.
 
 Trivy scans the image IDs used by running containers once per rootless account. Each account gets a private cache and can access only its own Podman socket. Raw reports stay under `/var/log/trivy/<account>/`; Wazuh receives normalized JSON events for new and resolved findings, scan summaries, and failures. Filter Wazuh alerts with `rule.groups:trivy`. Initial scans are staggered, and later scans run daily with randomized delay.
 
 Apply the manager rules, scanners, and agent reader together with `--tags platform,trivy,wazuh_agent`. To scan one account immediately, run `sudo systemctl start trivy-scan-svc-wazuh.service` (replace the account suffix as needed). After all initial timers have fired, set `trivy_verify_scan_results: true` and run `--tags verify` to require a completed report from every account.
 
-Suricata generates alerts. Zeek and SiLK generate protocol logs and flow records. Wazuh ingests them. Calling every Zeek event an "alert" would be wrong.
+Suricata sends alerts, anomalies, and selected investigation metadata to Wazuh. Zeek sends only notices, intelligence/signature matches, weird activity, and selected file/TLS/SSH metadata. SiLK and YAF operational failures stay in the warning-level SigNoz health feed; raw flow records remain in SiLK. Calling every Zeek or SiLK record an alert would be wrong.
 
-Suricata's yaml has no CPU-percent cap. The default `threads: auto` starts one worker per core and will fill a 4 vCPU lab. This playbook sets `suricata_af_packet_threads: 1` (one worker per capture interface) and `suricata_detect_thread_ratio: 0.5` in `/etc/suricata/platform-local.yaml`. Raise the thread count on a large VPS if `eve.json` shows kernel drops.
+Suricata's yaml has no CPU-percent cap. The default `threads: auto` starts one worker per core and will fill a 4 vCPU lab. This playbook sets `suricata_af_packet_threads: 1` (one worker per capture interface) and `suricata_detect_thread_ratio: 0.5` in `/etc/suricata/platform-local.yaml`. Raise the thread count on a large VPS if `eve-security.json` or the service journal shows kernel drops.
 
 ### Supply chain
 

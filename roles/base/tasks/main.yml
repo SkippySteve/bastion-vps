@@ -7,23 +7,47 @@
     name:
       - acl
       - apache2-utils
+      - auditd
       - ca-certificates
+      - chrony
+      - cron
       - curl
       - dbus-user-session
       - fuse-overlayfs
       - git
       - gnupg
       - jq
+      - libpam-pwquality
       - nftables
       - nodejs
       - passt
       - podman
       - podman-compose
       - rsync
+      - rsyslog
       - slirp4netns
       - sudo
+      - systemd-journal-remote
       - uidmap
       - unzip
+
+- name: Apply safe CIS host hardening controls
+  ansible.builtin.import_tasks: cis_hardening.yml
+
+- name: Install bounded host audit rules
+  ansible.builtin.template:
+    src: audit-platform.rules.j2
+    dest: /etc/audit/rules.d/50-secure-platform.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load host audit rules
+
+- name: Enable the host audit service
+  ansible.builtin.systemd_service:
+    name: auditd.service
+    enabled: true
+    state: started
 
 - name: Set the platform hostname
   ansible.builtin.hostname:
@@ -39,6 +63,10 @@
     create_home: true
     password: "{{ admin_password_hash }}"
     update_password: always
+    password_expire_max: 365
+    password_expire_min: 1
+    password_expire_warn: 7
+    password_expire_account_disable: 45
 
 - name: Install operator SSH keys
   ansible.posix.authorized_key:
@@ -110,7 +138,11 @@
     group: "{{ item.value.name }}"
     mode: "0600"
   loop: "{{ service_accounts | dict2items }}"
-  notify: Restart secure edge
+  notify:
+    - Restart secure edge
+    - Restart secure WAF for logging
+    - Restart secure Authentik for logging
+    - Restart secure Forgejo for logging
 
 - name: Permit loopback Forgejo registry access for the runner and app
   ansible.builtin.template:
@@ -197,10 +229,17 @@
 - name: Install the hardened SSH daemon drop-in
   ansible.builtin.template:
     src: sshd-hardening.conf.j2
-    dest: /etc/ssh/sshd_config.d/90-secure-platform.conf
+    # OpenSSH uses the first value it reads. Load before provider drop-ins.
+    dest: /etc/ssh/sshd_config.d/00-secure-platform.conf
     owner: root
     group: root
     mode: "0644"
+  notify: Restart SSH
+
+- name: Remove the superseded late-loading SSH drop-in
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/90-secure-platform.conf
+    state: absent
   notify: Restart SSH
 
 - name: Validate the complete SSH daemon configuration

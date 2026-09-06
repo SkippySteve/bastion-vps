@@ -47,16 +47,6 @@
     - silk
     - yaf
 
-- name: Grant the host telemetry collector read-only sensor log access
-  ansible.builtin.user:
-    name: otelcol-contrib
-    groups:
-      - suricata
-      - zeek
-      - silk
-    append: true
-  notify: Restart host telemetry collector
-
 - name: Create per-interface sensor log directories
   ansible.builtin.file:
     path: "/var/log/{{ item.0 }}/{{ item.1 }}{% if item.0 == 'zeek' %}/current{% endif %}"

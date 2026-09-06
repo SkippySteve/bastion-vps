@@ -18,3 +18,16 @@ af-packet:
     use-mmap: yes
     tpacket-v3: yes
 {% endfor %}
+
+# Keep the Wazuh stream focused on detections and investigation metadata.
+# Flow counters and routine protocol telemetry remain operational data.
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: /var/log/suricata/platform/eve-security.json
+      community-id: yes
+      types:
+{% for event_type in wazuh_suricata_event_types %}
+        - {{ event_type }}
+{% endfor %}

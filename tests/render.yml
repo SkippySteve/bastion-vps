@@ -14,6 +14,7 @@
       network: 192.0.2.0
       prefix: 24
     preflight_platform_arch: amd64
+    wazuh_agent_has_unattended_logs: true
     traefik_dynamic_directory: "{{ render_root }}/dynamic"
     traefik_acme_storage: "{{ render_root }}/acme.json"
     traefik_acme_ca_server: https://127.0.0.1:9/directory
@@ -68,12 +69,19 @@
         - {src: ../roles/base/templates/containers.conf.j2, dest: containers.conf}
         - {src: ../roles/base/templates/sshd-hardening.conf.j2, dest: sshd.conf}
         - {src: ../roles/base/templates/nftables.conf.j2, dest: nftables.conf}
+        - {src: ../roles/base/templates/audit-platform.rules.j2, dest: audit-platform.rules}
+        - {src: ../roles/base/templates/login-warning.j2, dest: login-warning}
+        - {src: ../roles/base/templates/sudoers-cis.j2, dest: sudoers-cis}
+        - {src: ../roles/base/templates/pwquality-cis.conf.j2, dest: pwquality-cis.conf}
+        - {src: ../roles/base/templates/pwhistory-cis.conf.j2, dest: pwhistory-cis.conf}
+        - {src: ../roles/base/templates/faillock-cis.conf.j2, dest: faillock-cis.conf}
         - {src: ../roles/platform/templates/traefik-compose.yml.j2, dest: traefik-compose.yml}
         - {src: ../roles/platform/templates/traefik-static.yml.j2, dest: traefik-static.yml}
         - {src: ../roles/platform/templates/traefik-dynamic.yml.j2, dest: dynamic/platform.yml}
         - {src: ../roles/platform/templates/lab-tls.cnf.j2, dest: lab-tls.cnf}
         - {src: ../roles/platform/templates/waf-compose.yml.j2, dest: waf-compose.yml}
         - {src: ../roles/platform/templates/waf-default.conf.template.j2, dest: waf.conf}
+        - {src: ../roles/platform/templates/waf-crs-exclusions.conf.j2, dest: waf-crs-exclusions.conf}
         - {src: ../roles/platform/templates/authentik-compose.yml.j2, dest: authentik-compose.yml}
         - {src: ../roles/platform/templates/forgejo-compose.yml.j2, dest: forgejo-compose.yml}
         - {src: ../roles/platform/templates/signoz-casting.yml.j2, dest: signoz-casting.yml}
@@ -99,6 +107,8 @@
         - {src: ../roles/fail2ban/templates/action.d/nftables-waf.conf.j2, dest: fail2ban-nftables-waf.conf}
         - {src: ../roles/trivy/templates/trivy-platform-scan.py.j2, dest: trivy-platform-scan}
         - {src: ../roles/trivy/templates/trivy-rules.xml.j2, dest: trivy-rules.xml}
+        - {src: ../roles/wazuh_agent/templates/localfiles.xml.j2, dest: wazuh-localfiles.xml}
+        - {src: ../roles/wazuh_agent/templates/platform-security-rules.xml.j2, dest: platform-security-rules.xml}
 
     - name: Render per-account Trivy scanner units
       ansible.builtin.template:
@@ -242,6 +252,7 @@
         - "{{ render_root }}/waf.conf"
         - "{{ render_root }}/scrapecast-compose.yml"
         - "{{ render_root }}/waf-compose.yml"
+        - "{{ render_root }}/waf-crs-exclusions.conf"
       register: scrapecast_render_raw
 
     - name: Decode rendered CI and scrapecast files
@@ -252,6 +263,7 @@
         render_waf_conf: "{{ scrapecast_render_raw.results[3].content | b64decode }}"
         render_scrapecast_compose: "{{ scrapecast_render_raw.results[4].content | b64decode | from_yaml }}"
         render_waf_compose: "{{ scrapecast_render_raw.results[5].content | b64decode | from_yaml }}"
+        render_waf_exclusions: "{{ scrapecast_render_raw.results[6].content | b64decode }}"
 
     - name: Read rendered sshd and nftables
       ansible.builtin.slurp:
@@ -278,6 +290,10 @@
           - '"127.0.0.1:13000:3000" in render_forgejo_compose.services.forgejo.ports'
           - "'AllowUsers ops' in render_sshd_conf"
           - "'AllowUsers ops git' not in render_sshd_conf"
+          - "'DisableForwarding yes' in render_sshd_conf"
+          - "'Banner /etc/issue.net' in render_sshd_conf"
+          - "'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com' in render_sshd_conf"
+          - "'MaxStartups 10:30:60' in render_sshd_conf"
           - "'tcp dport { 22, 2222, 443 }' in render_nftables_conf"
 
     - name: Confirm host Forgejo SSH passthrough files are absent
@@ -326,9 +342,16 @@
           - "'./fail2ban-deny.conf:/etc/nginx/fail2ban-deny.conf:ro' in (render_waf_compose.services.waf.volumes | join(' '))"
           - render_waf_compose.services.waf.environment.ALLOWED_REQUEST_CONTENT_TYPE is not defined
           - >-
-            render_waf_compose.services.waf.volumes
-            | select('search', 'REQUEST-900-EXCLUSION-RULES-BEFORE-CRS')
-            | list | length == 0
+            './REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro'
+            in (render_waf_compose.services.waf.volumes | join(' '))
+          - ("@streq " ~ git_fqdn) in render_waf_exclusions
+          - "'ctl:ruleRemoveById=920440' in render_waf_exclusions"
+          - "'ctl:ruleRemoveById=930130' in render_waf_exclusions"
+          - "'ctl:ruleRemoveById=930140' in render_waf_exclusions"
+          - "'info/refs' in render_waf_exclusions"
+          - "'git-upload-pack' in render_waf_exclusions"
+          - "'git-receive-pack' in render_waf_exclusions"
+          - "'ctl:ruleEngine=Off' not in render_waf_exclusions"
 
     - name: Read rendered fail2ban files
       ansible.builtin.slurp:
@@ -445,6 +468,12 @@
           - "'nginx' in render_host_otelcol.service.pipelines.metrics.receivers"
           - "'otlp' in render_host_otelcol.service.pipelines.traces.receivers"
           - "'otlp' in render_host_otelcol.service.pipelines.logs.receivers"
+          - "'journald/operations' in render_host_otelcol.service.pipelines.logs.receivers"
+          - render_host_otelcol.receivers['journald/operations'].priority == "warning"
+          - "'journald' not in render_host_otelcol.receivers"
+          - "'filelog/security' not in render_host_otelcol.receivers"
+          - "'log_tag = ' in render_containers_conf"
+          - "'.Name' in render_containers_conf"
           - render_traefik_static.entryPoints.websecure.observability.tracing | bool
           - render_traefik_static.entryPoints.websecure.observability.metrics | bool
           - render_traefik_static.entryPoints.websecure.observability.accessLogs | bool
@@ -466,6 +495,10 @@
           - "'14318' not in render_traefik_static.log.otlp.http.endpoint"
           - render_traefik_compose.services.traefik.extra_hosts is not defined
           - render_waf_compose.services.waf.environment.WAF_STATUS_PORT == "18091"
+          - render_waf_compose.services.waf.environment.MODSEC_AUDIT_ENGINE == "RelevantOnly"
+          - render_waf_compose.services.waf.environment.MODSEC_AUDIT_LOG == "/dev/stdout"
+          - render_waf_compose.services.waf.environment.MODSEC_AUDIT_LOG_FORMAT == "JSON"
+          - render_waf_compose.services.waf.environment.MODSEC_AUDIT_LOG_PARTS == "AHZ"
           - '"listen 127.0.0.1:${WAF_STATUS_PORT}" in render_waf_conf'
           - '"stub_status" in render_waf_conf'
           - render_scrapecast_compose.services.web.extra_hosts == ["host.containers.internal:169.254.1.3"]
@@ -566,7 +599,14 @@
         - "{{ render_root }}/wazuh-compose.yml"
         - "{{ playbook_dir }}/../roles/wazuh_agent/tasks/main.yml"
         - "{{ playbook_dir }}/../roles/platform/tasks/main.yml"
-        - "{{ playbook_dir }}/../roles/wazuh_agent/templates/localfiles.xml.j2"
+        - "{{ render_root }}/wazuh-localfiles.xml"
+        - "{{ render_root }}/platform-security-rules.xml"
+        - "{{ render_root }}/audit-platform.rules"
+        - "{{ render_root }}/suricata-platform.yaml"
+        - "{{ playbook_dir }}/../roles/base/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/sensors/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/verify/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/base/tasks/cis_hardening.yml"
       register: wazuh_render_raw
 
     - name: Decode rendered Wazuh Compose
@@ -575,6 +615,13 @@
         wazuh_agent_tasks_src: "{{ wazuh_render_raw.results[1].content | b64decode }}"
         platform_wazuh_tasks_src: "{{ wazuh_render_raw.results[2].content | b64decode }}"
         wazuh_agent_localfiles_src: "{{ wazuh_render_raw.results[3].content | b64decode }}"
+        wazuh_platform_rules_src: "{{ wazuh_render_raw.results[4].content | b64decode }}"
+        audit_platform_rules_src: "{{ wazuh_render_raw.results[5].content | b64decode }}"
+        render_suricata_security_src: "{{ wazuh_render_raw.results[6].content | b64decode }}"
+        base_security_tasks_src: "{{ wazuh_render_raw.results[7].content | b64decode }}"
+        sensor_security_tasks_src: "{{ wazuh_render_raw.results[8].content | b64decode }}"
+        verify_security_tasks_src: "{{ wazuh_render_raw.results[9].content | b64decode }}"
+        cis_security_tasks_src: "{{ wazuh_render_raw.results[10].content | b64decode }}"
 
     - name: Require Wazuh 5.0.0-beta5 on loopback with 5.x paths
       ansible.builtin.assert:
@@ -601,10 +648,45 @@
           - "'systemd-journal' in wazuh_agent_tasks_src"
           - "'trivy-readers' in wazuh_agent_tasks_src"
           - "'journald' in wazuh_agent_localfiles_src"
+          - "'<filter field=\"_SYSTEMD_UNIT\">' in wazuh_agent_localfiles_src"
+          - "'<filter field=\"CONTAINER_NAME\">' in wazuh_agent_localfiles_src"
+          - "'<location>journald</location>\\n          <log_format>journald</log_format>\\n        </localfile>' not in wazuh_agent_localfiles_src"
           - "'/var/log/fail2ban.log' in wazuh_agent_localfiles_src"
-          - "'/var/log/suricata/*/eve.json' in wazuh_agent_localfiles_src"
-          - "'/var/log/zeek/*/current/*.log' in wazuh_agent_localfiles_src"
-          - "'/etc/ssh' in wazuh_agent_tasks_src"
+          - "'/var/log/auth.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/syslog' in wazuh_agent_localfiles_src"
+          - "'/var/log/sudo.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/audit/audit.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/apt/history.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/suricata/platform/eve-security.json' in wazuh_agent_localfiles_src"
+          - "'/var/log/zeek/*/current/notice.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/silk/rwflowpack.log' not in wazuh_agent_localfiles_src"
+          - "'wazuh_host_fim_paths' in wazuh_agent_tasks_src"
+          - "'Remove an unfiltered location-first journald collector' in wazuh_agent_tasks_src"
+          - "'Confirm the manager can read the mounted platform rules' in wazuh_agent_tasks_src"
+          - "'/wazuh-config-mount/etc/rules/platform_security_rules.xml' in wazuh_agent_tasks_src"
+          - "'--uid=' in wazuh_agent_tasks_src"
+          - "'LimitMEMLOCK=infinity' in wazuh_agent_tasks_src"
+          - "'LimitNOFILE=655360' in wazuh_agent_tasks_src"
+          - "'platform_network_ids' in wazuh_platform_rules_src"
+          - "'platform_waf' in wazuh_platform_rules_src"
+          - "'privileged_command' in audit_platform_rules_src"
+          - "'eve-security.json' in render_suricata_security_src"
+          - "'- files' in render_suricata_security_src"
+          - "'- fileinfo' not in render_suricata_security_src"
+          - "'- flow' not in render_suricata_security_src"
+          - "'auditd' in base_security_tasks_src"
+          - "'chrony.service' in cis_security_tasks_src"
+          - "'cron.service' in cis_security_tasks_src"
+          - "'rsyslog.service' in cis_security_tasks_src"
+          - "'systemd-timesyncd.service' in cis_security_tasks_src"
+          - "'/etc/security/pwquality.conf.d' in cis_security_tasks_src"
+          - "'systemd-journal-upload.service' in cis_security_tasks_src"
+          - "'pam_hardening_confirm' in cis_security_tasks_src"
+          - "'root_account_lock_confirm' in cis_security_tasks_src"
+          - "'scheduled_jobs' in audit_platform_rules_src"
+          - "'authentication_policy' in audit_platform_rules_src"
+          - "'Grant the host telemetry collector read-only sensor log access' not in sensor_security_tasks_src"
+          - "'firewall_lockdown_confirm is false' in verify_security_tasks_src"
           - "'pre-release/5.x/apt/' in wazuh_agent_apt_repo"
           - "'wazuh-certs.sh' in platform_wazuh_tasks_src"
           - "'generate-indexer-certs' not in platform_wazuh_tasks_src"
@@ -622,6 +704,29 @@
           - "'1517' in wazuh_agent_tasks_src"
           - render_wazuh_compose.services['wazuh.manager'].environment.API_PASSWORD is not defined
           - render_wazuh_compose.services['wazuh.dashboard'].environment.API_PASSWORD is defined
+
+    - name: Validate rendered Wazuh security XML
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - >-
+            import xml.etree.ElementTree as ET;
+            ET.parse('{{ render_root }}/platform-security-rules.xml');
+            ET.fromstring('<root>' + open('{{ render_root }}/wazuh-localfiles.xml').read() + '</root>')
+      changed_when: false
+
+    - name: Validate normalized Wazuh security fixtures
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - >-
+            import json, pathlib;
+            [json.loads(line) for line in pathlib.Path(
+            '{{ playbook_dir }}/fixtures/wazuh-security-events.ndjson'
+            ).read_text().splitlines()]
+      changed_when: false
 
     - name: Read rendered per-account Trivy units
       ansible.builtin.slurp:

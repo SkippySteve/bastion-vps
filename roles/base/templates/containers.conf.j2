@@ -1,5 +1,6 @@
 [containers]
 log_driver = "journald"
+log_tag = "{% raw %}{{.Name}}{% endraw %}"
 tz = "UTC"
 pids_limit = 2048
 

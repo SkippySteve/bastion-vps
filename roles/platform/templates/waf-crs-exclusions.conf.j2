@@ -1,0 +1,16 @@
+# Forgejo serves repository files whose names CRS would otherwise treat as
+# restricted extensions (.sh, .cfg, .conf) or restricted files (.gitignore).
+# Limit the skip to git.<domain>. Leave smart HTTP on CRS so clone stays on
+# SSH :2222. Nginx still denies hidden /.git paths.
+SecRule REQUEST_HEADERS:Host "@streq {{ git_fqdn }}" \
+ "id:10010,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "!@rx (?:^|/)(?:info/refs|git-upload-pack|git-receive-pack)(?:\?|$)" \
+ "t:none,\
+  ctl:ruleRemoveById=920440,\
+  ctl:ruleRemoveById=930130,\
+  ctl:ruleRemoveById=930140"

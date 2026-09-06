@@ -30,21 +30,33 @@ receivers:
       network: {}
       paging: {}
       processes: {}
-  journald:
+  journald/operations:
     directory: /var/log/journal
     start_at: end
-    priority: info
+    priority: warning
+    units:
+{% for unit in signoz_operations_journal_units %}
+      - {{ unit }}
+{% endfor %}
+{% for account in service_accounts.values() %}
+      - otelcol-podman-{{ account.name }}.service
+{% endfor %}
+{% if enable_suricata | bool %}
+      - suricata-platform.service
+{% endif %}
+{% if enable_silk | bool %}
+      - silk-rwflowpack.service
+{% for iface in sensor_interfaces | unique %}
+      - yaf-{{ iface }}.service
+{% endfor %}
+{% endif %}
+{% if enable_zeek | bool %}
+{% for iface in sensor_interfaces | unique %}
+      - zeek@{{ iface }}.service
+{% endfor %}
+{% endif %}
     storage: file_storage
     all: false
-  filelog/security:
-    include:
-      - /var/log/suricata/*/eve.json
-      - /var/log/zeek/*/current/*.log
-      - /var/log/silk/*.log
-    start_at: end
-    include_file_name: true
-    include_file_path: true
-    storage: file_storage
   prometheus:
     config:
       scrape_configs:
@@ -106,6 +118,6 @@ service:
       processors: [memory_limiter, resourcedetection, resource/platform, batch]
       exporters: [otlp/signoz]
     logs:
-      receivers: [otlp, journald, filelog/security]
+      receivers: [otlp, journald/operations]
       processors: [memory_limiter, resourcedetection, resource/platform, batch]
       exporters: [otlp/signoz]

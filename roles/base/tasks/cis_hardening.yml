@@ -1,0 +1,218 @@
+---
+- name: Install legal warning banners
+  ansible.builtin.template:
+    src: login-warning.j2
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/motd
+    - /etc/issue
+    - /etc/issue.net
+
+- name: Stop systemd-timesyncd so chrony can own NTP
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd.service
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Enable required time and job scheduling services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - chrony.service
+    - cron.service
+
+- name: Protect the system crontab
+  ansible.builtin.file:
+    path: /etc/crontab
+    state: file
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Protect system cron directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /etc/cron.hourly
+    - /etc/cron.daily
+    - /etc/cron.weekly
+    - /etc/cron.monthly
+    - /etc/cron.d
+
+- name: Create the protected sudo audit log
+  ansible.builtin.file:
+    path: /var/log/sudo.log
+    state: touch
+    owner: root
+    group: adm
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Require a password and bounded authentication cache for the operator
+  ansible.builtin.template:
+    src: sudoers-cis.j2
+    dest: /etc/sudoers.d/99-secure-platform-cis
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Create the restricted su group
+  ansible.builtin.group:
+    name: sugroup
+    system: true
+    state: present
+
+- name: Permit the provisioning operator to use su
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: sugroup
+    append: true
+
+- name: Confirm the provider su stack has the expected root bypass
+  ansible.builtin.command:
+    argv:
+      - /bin/grep
+      - -Eq
+      - '^auth\s+sufficient\s+pam_rootok[.]so\b'
+      - /etc/pam.d/su
+  changed_when: false
+
+- name: Restrict su to the dedicated group
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^auth\s+required\s+pam_wheel[.]so\b'
+    line: auth required pam_wheel.so use_uid group=sugroup
+    insertafter: '^auth\s+sufficient\s+pam_rootok[.]so\b'
+    backup: true
+
+- name: Configure defaults for newly created local password accounts
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^\s*{{ item.key }}\s+'
+    line: "{{ item.key }}\t{{ item.value }}"
+    backup: true
+  loop:
+    - {key: PASS_MAX_DAYS, value: "365"}
+    - {key: PASS_MIN_DAYS, value: "1"}
+    - {key: PASS_WARN_AGE, value: "7"}
+    - {key: ENCRYPT_METHOD, value: YESCRYPT}
+
+- name: Lock inactive newly created password accounts
+  ansible.builtin.lineinfile:
+    path: /etc/default/useradd
+    regexp: '^\s*INACTIVE='
+    line: INACTIVE=45
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+
+- name: Create the pwquality drop-in directory
+  ansible.builtin.file:
+    path: /etc/security/pwquality.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install password quality policy
+  ansible.builtin.template:
+    src: pwquality-cis.conf.j2
+    dest: /etc/security/pwquality.conf.d/50-secure-platform.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install password history policy
+  ansible.builtin.template:
+    src: pwhistory-cis.conf.j2
+    dest: /etc/security/pwhistory.conf
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install authentication failure policy
+  ansible.builtin.template:
+    src: faillock-cis.conf.j2
+    dest: /etc/security/faillock.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+# Editing a live PAM stack can remove both sudo and console access. The policy
+# files and required modules are installed above, but stack activation requires
+# an explicit maintenance-window confirmation and console access.
+- name: Confirm the provider password stack is safe to extend
+  ansible.builtin.command:
+    argv:
+      - /bin/grep
+      - -Eq
+      - '^password\s+.*pam_unix[.]so\b'
+      - /etc/pam.d/common-password
+  changed_when: false
+  when: pam_hardening_confirm | bool
+
+- name: Activate password quality before pam_unix
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-password
+    regexp: '^password\s+requisite\s+pam_pwquality[.]so\b'
+    line: password requisite pam_pwquality.so retry=3
+    insertbefore: '^password\s+.*pam_unix[.]so\b'
+    backup: true
+  when: pam_hardening_confirm | bool
+
+- name: Activate password history before pam_unix
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-password
+    regexp: '^password\s+requisite\s+pam_pwhistory[.]so\b'
+    line: password requisite pam_pwhistory.so use_authtok
+    insertbefore: '^password\s+.*pam_unix[.]so\b'
+    backup: true
+  when: pam_hardening_confirm | bool
+
+- name: Remove null passwords from the pam_unix password stack
+  ansible.builtin.replace:
+    path: /etc/pam.d/common-password
+    regexp: '^(password\s+.*pam_unix[.]so\s+.*)(?:\s|nullok)(.*)$'
+    replace: '\1\2'
+    backup: true
+  when: pam_hardening_confirm | bool
+
+- name: Require pam_unix to reuse the quality-checked authentication token
+  ansible.builtin.replace:
+    path: /etc/pam.d/common-password
+    regexp: '^(password\s+.*pam_unix[.]so\s+)(?!.*\buse_authtok\b)(.*)$'
+    replace: '\1use_authtok \2'
+    backup: true
+  when: pam_hardening_confirm | bool
+
+- name: Lock the root password only after explicit recovery-access confirmation
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+  when: root_account_lock_confirm | bool
+
+- name: Keep systemd journal upload disabled because Wazuh is the remote sink
+  ansible.builtin.systemd_service:
+    name: systemd-journal-upload.service
+    enabled: false
+    state: stopped
+
+- name: Enable rsyslog compatibility logging for Wazuh ingestion
+  ansible.builtin.systemd_service:
+    name: rsyslog.service
+    enabled: true
+    state: started

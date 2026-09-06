@@ -1,0 +1,4 @@
+{"security.source":"packages","message":"install openssl:amd64 3.0.0"}
+{"sensor.type":"suricata","event_type":"alert","alert":{"signature":"ET TEST IDS alert","severity":1}}
+{"sensor.type":"zeek","zeek.log":"notice.log","note":"Scan::Port_Scan","msg":"Address scanned multiple ports"}
+{"sensor.type":"zeek","zeek.log":"intel.log","indicator":"198.51.100.23","seen.indicator_type":"Intel::ADDR"}

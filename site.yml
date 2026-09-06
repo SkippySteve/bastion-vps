@@ -1,0 +1,34 @@
+---
+- name: Provision the Debian 13 secure service platform
+  hosts: secure_vps
+  become: true
+  gather_facts: true
+  serial: 1
+
+  roles:
+    - role: preflight
+      tags: [always, preflight]
+    - role: dns
+      tags: [dns]
+      when: cloudflare_dns_enabled | bool
+    - role: base
+      tags: [base]
+    - role: platform
+      tags: [platform]
+    - role: fail2ban
+      tags: [fail2ban]
+    - role: telemetry
+      tags: [telemetry]
+    - role: sensors
+      tags: [sensors]
+    - role: trivy
+      tags: [trivy]
+    - role: wazuh_agent
+      tags: [wazuh_agent]
+    - role: runner
+      tags: [runner]
+    - role: scrapecast
+      tags: [scrapecast]
+      when: enable_scrapecast | bool
+    - role: verify
+      tags: [verify]

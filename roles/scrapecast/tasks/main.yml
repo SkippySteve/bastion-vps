@@ -1,0 +1,107 @@
+---
+- name: Create the scrapecast stack directory
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.scrapecast.name }}/stacks/scrapecast"
+    state: directory
+    owner: "{{ service_accounts.scrapecast.name }}"
+    group: "{{ service_accounts.scrapecast.name }}"
+    mode: "0700"
+
+- name: Render the scrapecast Compose definition
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "/var/lib/{{ service_accounts.scrapecast.name }}/stacks/scrapecast/compose.yml"
+    owner: "{{ service_accounts.scrapecast.name }}"
+    group: "{{ service_accounts.scrapecast.name }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart secure scrapecast
+
+- name: Install Forgejo Packages pull credentials for scrapecast
+  ansible.builtin.template:
+    src: auth.json.j2
+    dest: "/var/lib/{{ service_accounts.scrapecast.name }}/.config/containers/auth.json"
+    owner: "{{ service_accounts.scrapecast.name }}"
+    group: "{{ service_accounts.scrapecast.name }}"
+    mode: "0600"
+  when: scrapecast_registry_pull_token | default('') | length > 0
+  no_log: true
+
+- name: Remove stale scrapecast registry credentials
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.scrapecast.name }}/.config/containers/auth.json"
+    state: absent
+  when: scrapecast_registry_pull_token | default('') | length == 0
+
+- name: Install the scrapecast Compose wrapper
+  ansible.builtin.template:
+    src: scrapecast.service.j2
+    dest: /etc/systemd/system/secure-scrapecast.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for scrapecast
+
+- name: Install the scrapecast image-update oneshot
+  ansible.builtin.template:
+    src: scrapecast-update.service.j2
+    dest: /etc/systemd/system/scrapecast-update.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for scrapecast
+
+- name: Install the scrapecast image-update timer
+  ansible.builtin.template:
+    src: scrapecast-update.timer.j2
+    dest: /etc/systemd/system/scrapecast-update.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for scrapecast
+
+- name: Apply scrapecast unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Pull scrapecast images when a registry token exists
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman-compose
+      - -f
+      - compose.yml
+      - pull
+    chdir: "/var/lib/{{ service_accounts.scrapecast.name }}/stacks/scrapecast"
+  become: true
+  become_user: "{{ service_accounts.scrapecast.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.scrapecast.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.scrapecast.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.scrapecast.uid }}/bus"
+  register: scrapecast_image_pull
+  changed_when: scrapecast_image_pull.rc == 0
+  failed_when: false
+  when: scrapecast_registry_pull_token | default('') | length > 0
+
+- name: Enable and start scrapecast once images pull
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - secure-scrapecast.service
+    - scrapecast-update.timer
+  when:
+    - scrapecast_registry_pull_token | default('') | length > 0
+    - scrapecast_image_pull.rc | default(1) == 0
+
+- name: Leave scrapecast stopped until Packages has images
+  ansible.builtin.debug:
+    msg: >-
+      svc-scrapecast is installed, but secure-scrapecast was not started.
+      Push scrapecast to Forgejo, wait for CI to publish
+      {{ scrapecast_registry }}/{{ scrapecast_image_repository }}/web:{{ scrapecast_image_tag }},
+      put a packages:read token in scrapecast_registry_pull_token, and rerun
+      with --tags scrapecast.
+  when: >-
+    scrapecast_registry_pull_token | default('') | length == 0
+    or scrapecast_image_pull.rc | default(1) != 0

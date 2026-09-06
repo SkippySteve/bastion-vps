@@ -1,0 +1,399 @@
+---
+- name: Install packet sensor runtime and build dependencies
+  ansible.builtin.apt:
+    state: present
+    name:
+      - autoconf
+      - automake
+      - bison
+      - build-essential
+      - cmake
+      - flex
+      - libdumbnet-dev
+      - libfl-dev
+      - libglib2.0-dev
+      - libgnutls28-dev
+      - libhwloc-dev
+      - libluajit-5.1-dev
+      - liblzma-dev
+      - liblzo2-dev
+      - libmaxminddb-dev
+      - libmnl-dev
+      - libpcap-dev
+      - libpcre2-dev
+      - libssl-dev
+      - libtool
+      - libunwind-dev
+      - lua5.3
+      - make
+      - pkg-config
+      - python3-dev
+      - suricata
+      - suricata-update
+      - uuid-dev
+      - zlib1g-dev
+
+- name: Create dedicated packet sensor users
+  ansible.builtin.user:
+    name: "{{ item }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    password_lock: true
+    groups: ""
+  loop:
+    - suricata
+    - zeek
+    - silk
+    - yaf
+
+- name: Grant the host telemetry collector read-only sensor log access
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups:
+      - suricata
+      - zeek
+      - silk
+    append: true
+  notify: Restart host telemetry collector
+
+- name: Create per-interface sensor log directories
+  ansible.builtin.file:
+    path: "/var/log/{{ item.0 }}/{{ item.1 }}{% if item.0 == 'zeek' %}/current{% endif %}"
+    state: directory
+    owner: "{{ item.0 }}"
+    group: "{{ item.0 }}"
+    mode: "0750"
+  loop: "{{ ['zeek'] | product(sensor_interfaces | unique) | list }}"
+
+- name: Create the shared Suricata log directory
+  ansible.builtin.file:
+    path: /var/log/suricata/platform
+    state: directory
+    owner: suricata
+    group: suricata
+    mode: "0750"
+
+- name: Stop leftover Snort capture units if present
+  ansible.builtin.systemd_service:
+    name: "snort3@{{ item }}.service"
+    state: stopped
+    enabled: false
+  loop: "{{ sensor_interfaces | unique }}"
+  failed_when: false
+
+- name: Remove the leftover Snort systemd instance unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/snort3@.service
+    state: absent
+  notify: Reload sensor units
+
+- name: Remove leftover Snort linker config
+  ansible.builtin.file:
+    path: /etc/ld.so.conf.d/snort.conf
+    state: absent
+  notify: Refresh dynamic linker cache
+
+- name: Configure Suricata
+  when: enable_suricata | bool
+  block:
+    - name: Disable the distribution single-interface Suricata unit
+      ansible.builtin.systemd_service:
+        name: suricata.service
+        enabled: false
+        state: stopped
+
+    - name: Render Suricata thread and AF_PACKET limits
+      ansible.builtin.template:
+        src: suricata-platform.yaml.j2
+        dest: /etc/suricata/platform-local.yaml
+        owner: root
+        group: suricata
+        mode: "0640"
+      notify: Restart Suricata sensors
+
+    - name: Include the platform Suricata overrides
+      ansible.builtin.blockinfile:
+        path: /etc/suricata/suricata.yaml
+        marker: "# {mark} debian13-secure-platform suricata include"
+        block: |
+          include: /etc/suricata/platform-local.yaml
+      notify: Restart Suricata sensors
+
+    - name: Update Suricata ET Open rules
+      ansible.builtin.command: suricata-update
+      register: sensors_suricata_update_result
+      changed_when: "'No changes detected' not in sensors_suricata_update_result.stdout"
+      notify: Restart Suricata sensors
+
+    - name: Install the hardened multi-interface Suricata unit
+      ansible.builtin.template:
+        src: suricata-platform.service.j2
+        dest: /etc/systemd/system/suricata-platform.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sensor units
+
+- name: Configure the official Zeek Debian 13 repository
+  when: enable_zeek | bool
+  block:
+    - name: Install the Zeek repository key
+      ansible.builtin.get_url:
+        url: https://download.opensuse.org/repositories/security:/zeek/Debian_13/Release.key
+        dest: /usr/share/keyrings/zeek.asc
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Add the Zeek repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/zeek.asc] https://download.opensuse.org/repositories/security:/zeek/Debian_13/ /"
+        filename: zeek
+        state: present
+        update_cache: true
+
+    - name: Install Zeek LTS
+      ansible.builtin.apt:
+        name: "zeek-{{ zeek_major_version }}"
+        state: present
+
+    - name: Install the hardened Zeek instance unit
+      ansible.builtin.template:
+        src: zeek@.service.j2
+        dest: /etc/systemd/system/zeek@.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sensor units
+
+    - name: Configure Zeek log rotation
+      ansible.builtin.template:
+        src: zeek.logrotate.j2
+        dest: /etc/logrotate.d/zeek-sensors
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Build and configure the SiLK and YAF flow pipeline
+  when: enable_silk | bool
+  block:
+    - name: Download pinned CERT NetSA sources
+      ansible.builtin.get_url:
+        url: "https://tools.netsa.cert.org/releases/{{ item.name }}-{{ item.version }}.tar.gz"
+        dest: "/usr/local/src/{{ item.name }}-{{ item.version }}.tar.gz"
+        checksum: "sha256:{{ item.checksum }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - {name: libfixbuf, version: "{{ libfixbuf_version }}", checksum: "{{ artifact_checksums.libfixbuf }}"}
+        - {name: silk, version: "{{ silk_version }}", checksum: "{{ artifact_checksums.silk }}"}
+        - {name: yaf, version: "{{ yaf_version }}", checksum: "{{ artifact_checksums.yaf }}"}
+
+    - name: Unpack CERT NetSA sources
+      ansible.builtin.unarchive:
+        src: "/usr/local/src/{{ item.name }}-{{ item.version }}.tar.gz"
+        dest: /usr/local/src
+        remote_src: true
+        creates: "/usr/local/src/{{ item.name }}-{{ item.version }}/configure"
+      loop:
+        - {name: libfixbuf, version: "{{ libfixbuf_version }}"}
+        - {name: silk, version: "{{ silk_version }}"}
+        - {name: yaf, version: "{{ yaf_version }}"}
+
+    - name: Check the libfixbuf installation marker
+      ansible.builtin.stat:
+        path: "/opt/netsa/.libfixbuf-{{ libfixbuf_version }}"
+      register: sensors_libfixbuf_marker
+
+    - name: Configure libfixbuf
+      ansible.builtin.command: ./configure --prefix=/opt/netsa
+      args: {chdir: "/usr/local/src/libfixbuf-{{ libfixbuf_version }}"}
+      when: not sensors_libfixbuf_marker.stat.exists
+      changed_when: true
+
+    - name: Compile libfixbuf
+      ansible.builtin.command: "make -j{{ source_build_jobs }}"
+      args: {chdir: "/usr/local/src/libfixbuf-{{ libfixbuf_version }}"}
+      when: not sensors_libfixbuf_marker.stat.exists
+      changed_when: true
+
+    - name: Install libfixbuf
+      ansible.builtin.command: make install
+      args: {chdir: "/usr/local/src/libfixbuf-{{ libfixbuf_version }}"}
+      when: not sensors_libfixbuf_marker.stat.exists
+      changed_when: true
+
+    - name: Record the libfixbuf version
+      ansible.builtin.file:
+        path: "/opt/netsa/.libfixbuf-{{ libfixbuf_version }}"
+        state: touch
+        mode: "0644"
+      when: not sensors_libfixbuf_marker.stat.exists
+
+    - name: Check the SiLK installation marker
+      ansible.builtin.stat:
+        path: "/opt/netsa/.silk-{{ silk_version }}"
+      register: sensors_silk_marker
+
+    - name: Configure SiLK
+      ansible.builtin.command: >-
+        ./configure --prefix=/opt/netsa --enable-ipv6
+        --enable-output-compression --with-python
+        --enable-data-rootdir=/var/lib/silk/data
+      args: {chdir: "/usr/local/src/silk-{{ silk_version }}"}
+      environment:
+        PKG_CONFIG_PATH: /opt/netsa/lib/pkgconfig
+        LDFLAGS: -Wl,-rpath,/opt/netsa/lib
+      when: not sensors_silk_marker.stat.exists
+      changed_when: true
+
+    - name: Compile SiLK
+      ansible.builtin.command: "make -j{{ source_build_jobs }}"
+      args: {chdir: "/usr/local/src/silk-{{ silk_version }}"}
+      when: not sensors_silk_marker.stat.exists
+      changed_when: true
+
+    - name: Install SiLK
+      ansible.builtin.command: make install
+      args: {chdir: "/usr/local/src/silk-{{ silk_version }}"}
+      when: not sensors_silk_marker.stat.exists
+      changed_when: true
+
+    - name: Record the SiLK version
+      ansible.builtin.file:
+        path: "/opt/netsa/.silk-{{ silk_version }}"
+        state: touch
+        mode: "0644"
+      when: not sensors_silk_marker.stat.exists
+
+    - name: Check the YAF installation marker
+      ansible.builtin.stat:
+        path: "/opt/netsa/.yaf-{{ yaf_version }}"
+      register: sensors_yaf_marker
+
+    - name: Configure YAF
+      ansible.builtin.command: ./configure --prefix=/opt/netsa --enable-applabel --enable-plugins
+      args: {chdir: "/usr/local/src/yaf-{{ yaf_version }}"}
+      environment:
+        PKG_CONFIG_PATH: /opt/netsa/lib/pkgconfig
+        LDFLAGS: -Wl,-rpath,/opt/netsa/lib
+      when: not sensors_yaf_marker.stat.exists
+      changed_when: true
+
+    - name: Compile YAF
+      ansible.builtin.command: "make -j{{ source_build_jobs }}"
+      args: {chdir: "/usr/local/src/yaf-{{ yaf_version }}"}
+      when: not sensors_yaf_marker.stat.exists
+      changed_when: true
+
+    - name: Install YAF
+      ansible.builtin.command: make install
+      args: {chdir: "/usr/local/src/yaf-{{ yaf_version }}"}
+      when: not sensors_yaf_marker.stat.exists
+      changed_when: true
+
+    - name: Record the YAF version
+      ansible.builtin.file:
+        path: "/opt/netsa/.yaf-{{ yaf_version }}"
+        state: touch
+        mode: "0644"
+      when: not sensors_yaf_marker.stat.exists
+
+    - name: Register CERT NetSA libraries with the dynamic linker
+      ansible.builtin.template:
+        src: netsa.ld.conf.j2
+        dest: /etc/ld.so.conf.d/netsa.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Refresh dynamic linker cache
+
+    - name: Create SiLK configuration, data, and log directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/silk, owner: silk, mode: "0750"}
+        - {path: /var/lib/silk/data, owner: silk, mode: "0750"}
+        - {path: /var/log/silk, owner: silk, mode: "0750"}
+
+    - name: Render the SiLK site and sensor configuration
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "/etc/silk/{{ item.dest }}"
+        owner: silk
+        group: silk
+        mode: "0640"
+      loop:
+        - {src: silk.conf.j2, dest: silk.conf}
+        - {src: sensors.conf.j2, dest: sensors.conf}
+      notify: Restart SiLK flow pipeline
+
+    - name: Install the SiLK flow packer unit
+      ansible.builtin.template:
+        src: silk-rwflowpack.service.j2
+        dest: /etc/systemd/system/silk-rwflowpack.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sensor units
+
+    - name: Install a YAF capture unit for each interface
+      ansible.builtin.template:
+        src: yaf-interface.service.j2
+        dest: "/etc/systemd/system/yaf-{{ item }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ sensor_interfaces | unique }}"
+      notify: Reload sensor units
+
+- name: Apply sensor binaries and unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate Suricata configuration
+  ansible.builtin.command: /usr/bin/suricata -T -c /etc/suricata/suricata.yaml
+  changed_when: false
+  when: enable_suricata | bool
+
+- name: Validate SiLK sensor mappings
+  ansible.builtin.command: >-
+    /opt/netsa/sbin/rwflowpack --sensor-configuration=/etc/silk/sensors.conf
+    --site-config-file=/etc/silk/silk.conf --verify-sensor-config
+  changed_when: false
+  when: enable_silk | bool
+
+- name: Enable Suricata on every capture interface
+  ansible.builtin.systemd_service:
+    name: suricata-platform.service
+    enabled: true
+    state: started
+  when: enable_suricata | bool
+
+- name: Enable Zeek on each capture interface
+  ansible.builtin.systemd_service:
+    name: "zeek@{{ item }}.service"
+    enabled: true
+    state: started
+  loop: "{{ sensor_interfaces | unique }}"
+  when: enable_zeek | bool
+
+- name: Enable the SiLK flow packer
+  ansible.builtin.systemd_service:
+    name: silk-rwflowpack.service
+    enabled: true
+    state: started
+  when: enable_silk | bool
+
+- name: Enable YAF on each capture interface
+  ansible.builtin.systemd_service:
+    name: "yaf-{{ item }}.service"
+    enabled: true
+    state: started
+  loop: "{{ sensor_interfaces | unique }}"
+  when: enable_silk | bool

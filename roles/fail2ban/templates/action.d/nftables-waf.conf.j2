@@ -1,0 +1,14 @@
+# Managed by Ansible. nftables-allports still does the real drop. This
+# keeps a matching nginx deny list for HTTPS after real_ip.
+[Definition]
+actionstart =
+actionstop =
+actioncheck =
+actionban = flock <wafdeny> sh -c 'grep -qxF "deny <ip>;" "<wafdeny>" || printf "deny %%s;\n" "<ip>" >> "<wafdeny>"'
+            <wafreload> || :
+actionunban = flock <wafdeny> sh -c 'grep -vxF "deny <ip>;" "<wafdeny>" > "<wafdeny>.tmp" && chown --reference="<wafdeny>" "<wafdeny>.tmp" && chmod --reference="<wafdeny>" "<wafdeny>.tmp" && mv "<wafdeny>.tmp" "<wafdeny>"'
+              <wafreload> || :
+
+[Init]
+wafdeny = /var/lib/{{ service_accounts.waf.name }}/stacks/waf/fail2ban-deny.conf
+wafreload = runuser -u {{ service_accounts.waf.name }} -- env HOME=/var/lib/{{ service_accounts.waf.name }} XDG_RUNTIME_DIR=/run/user/{{ service_accounts.waf.uid }} /usr/bin/podman exec modsecurity-crs nginx -s reload

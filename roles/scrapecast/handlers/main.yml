@@ -1,0 +1,10 @@
+---
+- name: Reload systemd for scrapecast
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart secure scrapecast
+  ansible.builtin.systemd_service:
+    name: secure-scrapecast.service
+    state: restarted
+  failed_when: false

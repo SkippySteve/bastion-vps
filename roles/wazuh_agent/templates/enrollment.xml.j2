@@ -1,0 +1,9 @@
+          <enrollment>
+            <enabled>yes</enabled>
+            <manager_address>127.0.0.1</manager_address>
+            <port>1515</port>
+            <agent_name>{{ platform_hostname }}</agent_name>
+{% if wazuh_agent_has_authd_pass | bool %}
+            <authorization_pass_path>etc/authd.pass</authorization_pass_path>
+{% endif %}
+          </enrollment>

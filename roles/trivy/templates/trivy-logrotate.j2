@@ -1,0 +1,10 @@
+/var/log/trivy/{{ item.value.name }}/events.ndjson {
+    daily
+    rotate {{ trivy_report_retention_days }}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 {{ item.value.name }} trivy-readers
+}

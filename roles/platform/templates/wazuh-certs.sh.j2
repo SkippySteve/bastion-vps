@@ -1,0 +1,80 @@
+#!/bin/bash
+# Generate the Wazuh 5 TLS files the official compose mounts.
+set -euo pipefail
+
+root="{{ wazuh_stack_dir }}"
+subj="/C=US/L=California/O=Wazuh/OU=Wazuh"
+days=3650
+
+mkdir -p \
+  "$root/config/root-ca/certs" \
+  "$root/config/wazuh_indexer/certs" \
+  "$root/config/wazuh_manager/certs" \
+  "$root/config/wazuh_dashboard/certs"
+
+if [[ -f $root/config/root-ca/certs/root-ca.pem ]]; then
+  chmod 644 "$root"/config/root-ca/certs/*.pem \
+    "$root"/config/wazuh_indexer/certs/*.pem \
+    "$root"/config/wazuh_manager/certs/*.pem \
+    "$root"/config/wazuh_dashboard/certs/*.pem
+  exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+openssl req -x509 -newkey rsa:4096 -nodes -days "$days" \
+  -keyout "$root/config/root-ca/certs/root-ca.key" \
+  -out "$root/config/root-ca/certs/root-ca.pem" \
+  -subj "${subj}/CN=root-ca"
+
+make_node() {
+  local cn="$1" key="$2" cert="$3"
+  cat >"$tmp/${cn}.cnf" <<EOF
+[req]
+default_bits = 4096
+prompt = no
+default_md = sha256
+distinguished_name = dn
+req_extensions = v3_req
+
+[dn]
+C = US
+L = California
+O = Wazuh
+OU = Wazuh
+CN = ${cn}
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = DNS:${cn}
+EOF
+  openssl req -new -newkey rsa:4096 -nodes \
+    -keyout "$key" -out "$tmp/${cn}.csr" -config "$tmp/${cn}.cnf"
+  openssl x509 -req -in "$tmp/${cn}.csr" \
+    -CA "$root/config/root-ca/certs/root-ca.pem" \
+    -CAkey "$root/config/root-ca/certs/root-ca.key" \
+    -CAcreateserial -days "$days" -out "$cert" \
+    -extfile "$tmp/${cn}.cnf" -extensions v3_req
+}
+
+make_node wazuh.indexer \
+  "$root/config/wazuh_indexer/certs/wazuh.indexer-key.pem" \
+  "$root/config/wazuh_indexer/certs/wazuh.indexer.pem"
+make_node admin \
+  "$root/config/wazuh_indexer/certs/admin-key.pem" \
+  "$root/config/wazuh_indexer/certs/admin.pem"
+make_node wazuh.manager \
+  "$root/config/wazuh_manager/certs/wazuh.manager-key.pem" \
+  "$root/config/wazuh_manager/certs/wazuh.manager.pem"
+make_node wazuh.dashboard \
+  "$root/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem" \
+  "$root/config/wazuh_dashboard/certs/wazuh.dashboard.pem"
+
+chmod 640 "$root"/config/root-ca/certs/*.key
+chmod 644 "$root"/config/root-ca/certs/*.pem \
+  "$root"/config/wazuh_indexer/certs/*.pem \
+  "$root"/config/wazuh_manager/certs/*.pem \
+  "$root"/config/wazuh_dashboard/certs/*.pem

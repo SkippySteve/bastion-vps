@@ -1,0 +1,59 @@
+<group name="trivy,container_security,">
+  <rule id="100300" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="integration">^trivy$</field>
+    <description>Trivy image scan event.</description>
+  </rule>
+
+  <rule id="100301" level="3">
+    <if_sid>100300</if_sid>
+    <field name="event_type">^summary$</field>
+    <description>Trivy scan summary for rootless account $(account): $(finding_count) findings across $(images_scanned) images.</description>
+    <group>trivy_summary,</group>
+  </rule>
+
+  <rule id="100302" level="3">
+    <if_sid>100300</if_sid>
+    <field name="event_type">^resolved$</field>
+    <description>Trivy finding resolved: $(finding_id) in $(image_names).</description>
+    <group>trivy_resolved,</group>
+  </rule>
+
+  <rule id="100303" level="5">
+    <if_sid>100300</if_sid>
+    <field name="event_type">^new$</field>
+    <description>New Trivy $(severity) $(finding_type) finding $(finding_id) in $(image_names).</description>
+    <group>trivy_finding,</group>
+  </rule>
+
+  <rule id="100304" level="5">
+    <if_sid>100303</if_sid>
+    <field name="severity">^(UNKNOWN|LOW)$</field>
+    <description>Trivy $(severity) finding $(finding_id) in $(image_names), package $(package).</description>
+  </rule>
+
+  <rule id="100305" level="8">
+    <if_sid>100303</if_sid>
+    <field name="severity">^MEDIUM$</field>
+    <description>Trivy MEDIUM finding $(finding_id) in $(image_names), package $(package).</description>
+  </rule>
+
+  <rule id="100306" level="12">
+    <if_sid>100303</if_sid>
+    <field name="severity">^HIGH$</field>
+    <description>Trivy HIGH finding $(finding_id) in $(image_names), package $(package).</description>
+  </rule>
+
+  <rule id="100307" level="14">
+    <if_sid>100303</if_sid>
+    <field name="severity">^CRITICAL$</field>
+    <description>Trivy CRITICAL finding $(finding_id) in $(image_names), package $(package).</description>
+  </rule>
+
+  <rule id="100308" level="10">
+    <if_sid>100300</if_sid>
+    <field name="event_type">^scan_error$</field>
+    <description>Trivy failed to scan $(image_names) for rootless account $(account): $(message).</description>
+    <group>trivy_error,</group>
+  </rule>
+</group>

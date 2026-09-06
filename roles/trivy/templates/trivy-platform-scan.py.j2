@@ -1,0 +1,332 @@
+#!/usr/bin/python3
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def compact(value, limit=512):
+    return " ".join(str(value or "").split())[:limit]
+
+
+def fingerprint(event):
+    stable = "|".join(
+        str(event.get(key, ""))
+        for key in (
+            "image_id",
+            "target",
+            "finding_type",
+            "finding_id",
+            "package",
+            "installed_version",
+            "start_line",
+        )
+    )
+    return hashlib.sha256(stable.encode()).hexdigest()
+
+
+def findings_from_report(report, account, image_names, scanned_at, image_id=None):
+    common = {
+        "integration": "trivy",
+        "account": account,
+        "scanned_at": scanned_at,
+        "image_id": image_id or report.get("Metadata", {}).get("ImageID", ""),
+        "image_digest": ",".join(report.get("Metadata", {}).get("RepoDigests") or []),
+        "image_names": ",".join(sorted(image_names)),
+        "artifact": compact(report.get("ArtifactName")),
+    }
+    findings = {}
+    for result in report.get("Results") or []:
+        target = compact(result.get("Target"))
+        for vuln in result.get("Vulnerabilities") or []:
+            event = {
+                **common,
+                "target": target,
+                "finding_type": "vulnerability",
+                "finding_id": compact(vuln.get("VulnerabilityID")),
+                "severity": compact(vuln.get("Severity", "UNKNOWN")).upper(),
+                "package": compact(vuln.get("PkgName")),
+                "installed_version": compact(vuln.get("InstalledVersion")),
+                "fixed_version": compact(vuln.get("FixedVersion")),
+                "status": compact(vuln.get("Status")),
+                "title": compact(vuln.get("Title")),
+                "primary_url": compact(vuln.get("PrimaryURL")),
+            }
+            event["fingerprint"] = vuln.get("Fingerprint") or fingerprint(event)
+            findings[event["fingerprint"]] = event
+        for misconf in result.get("Misconfigurations") or []:
+            event = {
+                **common,
+                "target": target,
+                "finding_type": "misconfiguration",
+                "finding_id": compact(misconf.get("ID")),
+                "severity": compact(misconf.get("Severity", "UNKNOWN")).upper(),
+                "status": compact(misconf.get("Status")),
+                "title": compact(misconf.get("Title")),
+                "message": compact(misconf.get("Message")),
+            }
+            event["fingerprint"] = fingerprint(event)
+            findings[event["fingerprint"]] = event
+        for secret in result.get("Secrets") or []:
+            event = {
+                **common,
+                "target": target,
+                "finding_type": "secret",
+                "finding_id": compact(secret.get("RuleID")),
+                "severity": compact(secret.get("Severity", "UNKNOWN")).upper(),
+                "title": compact(secret.get("Title")),
+                "category": compact(secret.get("Category")),
+                "start_line": secret.get("StartLine", 0),
+            }
+            event["fingerprint"] = fingerprint(event)
+            findings[event["fingerprint"]] = event
+    return findings
+
+
+def emit(stream, event_type, event):
+    payload = {**event, "event_type": event_type}
+    stream.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+    stream.flush()
+
+
+def running_images():
+    proc = subprocess.run(
+        ["/usr/bin/podman", "ps", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    containers = json.loads(proc.stdout or "[]")
+    if isinstance(containers, dict):
+        containers = [containers]
+    images = {}
+    for container in containers:
+        image_id = container.get("ImageID") or container.get("ImageId")
+        image_name = container.get("Image") or container.get("ImageName") or image_id
+        if image_id:
+            images.setdefault(image_id, set()).add(image_name)
+    return images
+
+
+def load_state(path):
+    try:
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".state-", text=True)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(state, stream, sort_keys=True)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def reconcile_findings(previous, current, running_ids, successful_images):
+    new = [event for key, event in current.items() if key not in previous]
+    resolved = []
+    retained = dict(current)
+    for key, event in previous.items():
+        image_id = event.get("image_id")
+        if key not in current and (
+            image_id in successful_images or image_id not in running_ids
+        ):
+            resolved.append(event)
+        elif key not in current:
+            retained[key] = event
+    return new, resolved, retained
+
+
+def scan_image(image_id, report_path, cache_dir, podman_host, scanners, timeout):
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = report_path.with_suffix(".tmp")
+    command = [
+        "/usr/local/bin/trivy",
+        "image",
+        "--image-src",
+        "podman",
+        "--podman-host",
+        podman_host,
+        "--cache-dir",
+        str(cache_dir),
+        "--scanners",
+        scanners,
+        "--format",
+        "json",
+        "--output",
+        str(temporary),
+        "--exit-code",
+        "0",
+        image_id,
+    ]
+    proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(compact(proc.stderr or proc.stdout, 1024))
+    report = json.loads(temporary.read_text())
+    os.replace(temporary, report_path)
+    return report
+
+
+def run(args):
+    scanned_at = utc_now()
+    report_dir = pathlib.Path(args.report_dir)
+    cache_dir = pathlib.Path(args.cache_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    state_path = cache_dir / "findings.json"
+    previous = load_state(state_path)
+    current = {}
+    successful_images = set()
+    errors = 0
+    inventory_ok = True
+
+    try:
+        images = running_images()
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        images = {}
+        errors += 1
+        inventory_ok = False
+        with (report_dir / "events.ndjson").open("a") as stream:
+            emit(
+                stream,
+                "scan_error",
+                {
+                    "integration": "trivy",
+                    "account": args.account,
+                    "scanned_at": scanned_at,
+                    "message": compact(error, 1024),
+                },
+            )
+
+    with (report_dir / "events.ndjson").open("a") as stream:
+        for image_id, image_names in sorted(images.items()):
+            report_name = hashlib.sha256(image_id.encode()).hexdigest() + ".json"
+            try:
+                report = scan_image(
+                    image_id,
+                    report_dir / report_name,
+                    cache_dir,
+                    args.podman_host,
+                    args.scanners,
+                    args.timeout,
+                )
+                successful_images.add(image_id)
+                current.update(
+                    findings_from_report(
+                        report, args.account, image_names, scanned_at, image_id
+                    )
+                )
+            except (OSError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                errors += 1
+                emit(
+                    stream,
+                    "scan_error",
+                    {
+                        "integration": "trivy",
+                        "account": args.account,
+                        "scanned_at": scanned_at,
+                        "image_id": image_id,
+                        "image_names": ",".join(sorted(image_names)),
+                        "message": compact(error, 1024),
+                    },
+                )
+
+        running_ids = (
+            set(images)
+            if inventory_ok
+            else {event.get("image_id") for event in previous.values()}
+        )
+        new, resolved, current = reconcile_findings(
+            previous, current, running_ids, successful_images
+        )
+        for event in new:
+            emit(stream, "new", event)
+        for event in resolved:
+            emit(stream, "resolved", {**event, "scanned_at": scanned_at})
+
+        counts = {}
+        for event in current.values():
+            severity = event.get("severity", "UNKNOWN")
+            counts[severity] = counts.get(severity, 0) + 1
+        emit(
+            stream,
+            "summary",
+            {
+                "integration": "trivy",
+                "account": args.account,
+                "scanned_at": scanned_at,
+                "images_scanned": len(successful_images),
+                "images_running": len(images),
+                "finding_count": len(current),
+                "critical_count": counts.get("CRITICAL", 0),
+                "high_count": counts.get("HIGH", 0),
+                "medium_count": counts.get("MEDIUM", 0),
+                "low_count": counts.get("LOW", 0),
+                "unknown_count": counts.get("UNKNOWN", 0),
+                "scan_errors": errors,
+            },
+        )
+
+    save_state(state_path, current)
+    (report_dir / "last-scan").write_text(scanned_at + "\n")
+    cutoff = dt.datetime.now().timestamp() - (args.retention_days * 86400)
+    for report in report_dir.glob("*.json"):
+        if report.stat().st_mtime < cutoff:
+            report.unlink()
+    subprocess.run(
+        [
+            "/usr/local/bin/trivy",
+            "clean",
+            "--scan-cache",
+            "--cache-dir",
+            str(cache_dir),
+        ],
+        check=False,
+        capture_output=True,
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--account", required=True)
+    parser.add_argument("--report-dir")
+    parser.add_argument("--cache-dir")
+    parser.add_argument("--podman-host")
+    parser.add_argument("--scanners", default="vuln,misconfig,secret")
+    parser.add_argument("--timeout", type=int, default=7200)
+    parser.add_argument("--retention-days", type=int, default=14)
+    parser.add_argument("--normalize-report")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    if args.normalize_report:
+        report = json.loads(pathlib.Path(args.normalize_report).read_text())
+        for event in findings_from_report(report, args.account, {"fixture"}, utc_now()).values():
+            print(json.dumps(event, sort_keys=True))
+        return
+    required = (args.report_dir, args.cache_dir, args.podman_host)
+    if not all(required):
+        raise SystemExit("--report-dir, --cache-dir and --podman-host are required")
+    run(args)
+
+
+if __name__ == "__main__":
+    main()

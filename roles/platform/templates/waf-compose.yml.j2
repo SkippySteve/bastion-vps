@@ -1,0 +1,27 @@
+---
+services:
+  waf:
+    image: "{{ modsecurity_crs_image }}"
+    container_name: modsecurity-crs
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PORT: "{{ waf_http_port }}"
+      WAF_STATUS_PORT: "{{ waf_status_port }}"
+      MODSEC_RULE_ENGINE: "On"
+      BLOCKING_PARANOIA: "1"
+      DETECTION_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      # CRS defaults to GET HEAD POST OPTIONS. Authentik, Forgejo, SigNoz,
+      # and Wazuh APIs all use PUT/PATCH/DELETE from their admin UIs.
+      ALLOWED_METHODS: "GET HEAD POST OPTIONS PUT PATCH DELETE"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    volumes:
+      - ./default.conf.template:/etc/nginx/templates/conf.d/default.conf.template:ro
+      - ./fail2ban-deny.conf:/etc/nginx/fail2ban-deny.conf:ro
+      - ./wazuh-root-ca.pem:/etc/nginx/wazuh-root-ca.pem:ro

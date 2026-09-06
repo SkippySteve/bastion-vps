@@ -1,0 +1,104 @@
+---
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  websecure:
+    address: "0.0.0.0:{{ public_port }}"
+    observability:
+      accessLogs: true
+      metrics: true
+      tracing: true
+      traceVerbosity: detailed
+    http:
+      aliasHeadersStrategy: reject
+      encodedCharacters:
+        allowEncodedBackslash: false
+        allowEncodedHash: false
+        allowEncodedNullCharacter: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedSemicolon: false
+        allowEncodedSlash: false
+    transport:
+      respondingTimeouts:
+        readTimeout: 60s
+        writeTimeout: 60s
+        idleTimeout: 180s
+
+providers:
+  file:
+    directory: "{{ traefik_dynamic_directory | default('/etc/traefik/dynamic') }}"
+    watch: true
+
+{% if traefik_acme_enabled | default(true) | bool %}
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "{{ acme_email }}"
+      storage: "{{ traefik_acme_storage | default('/var/lib/traefik/acme.json') }}"
+{% if traefik_acme_ca_server is defined %}
+      caServer: "{{ traefik_acme_ca_server }}"
+{% endif %}
+{% if traefik_acme_challenge | default('tls') == 'dns' %}
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+{% else %}
+      tlsChallenge: {}
+{% endif %}
+{% endif %}
+
+api:
+  dashboard: true
+  insecure: false
+
+ping:
+  entryPoint: websecure
+
+log:
+  level: INFO
+  format: json
+  otlp:
+    http:
+      endpoint: "http://127.0.0.1:{{ host_otlp_http_port }}/v1/logs"
+
+accessLog:
+  format: json
+  dualOutput: true
+  otlp:
+    serviceName: traefik
+    http:
+      endpoint: "http://127.0.0.1:{{ host_otlp_http_port }}/v1/logs"
+  fields:
+    defaultMode: keep
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        X-Forwarded-For: keep
+
+metrics:
+  otlp:
+    serviceName: traefik
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true
+    pushInterval: 10s
+    grpc:
+      endpoint: "127.0.0.1:{{ host_otlp_grpc_port }}"
+      insecure: true
+
+tracing:
+  serviceName: traefik
+  sampleRate: 1.0
+  otlp:
+    grpc:
+      endpoint: "127.0.0.1:{{ host_otlp_grpc_port }}"
+      insecure: true
+
+experimental:
+  otlpLogs: true

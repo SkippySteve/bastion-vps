@@ -1,0 +1,29 @@
+---
+services:
+  traefik:
+    image: docker.io/library/traefik:v{{ traefik_version }}
+    container_name: traefik
+    network_mode: host
+    restart: unless-stopped
+    user: "0:0"
+    command: ["--configFile=/etc/traefik/traefik.yml"]
+{% if (traefik_acme_enabled | default(true) | bool) and (traefik_acme_challenge | default('tls') == 'dns') %}
+    env_file:
+      - ./cloudflare.env
+{% endif %}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    volumes:
+      - ./config:/etc/traefik:ro
+      - ./acme.json:/var/lib/traefik/acme.json:rw
+{% if not (traefik_acme_enabled | default(true) | bool) %}
+      - ./tls:/etc/traefik/tls:ro
+{% endif %}
+      - traefik-plugin-storage:/plugins-storage:rw
+
+volumes:
+  traefik-plugin-storage: {}

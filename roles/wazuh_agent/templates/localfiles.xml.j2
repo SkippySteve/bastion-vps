@@ -1,0 +1,40 @@
+        <localfile>
+          <location>journald</location>
+          <log_format>journald</log_format>
+        </localfile>
+        <localfile>
+          <location>/var/log/auth.log</location>
+          <log_format>syslog</log_format>
+        </localfile>
+        <localfile>
+          <location>/var/log/syslog</location>
+          <log_format>syslog</log_format>
+        </localfile>
+        <localfile>
+          <location>/var/log/fail2ban.log</location>
+          <log_format>syslog</log_format>
+        </localfile>
+        <localfile>
+          <location>/var/log/dpkg.log</location>
+          <log_format>syslog</log_format>
+        </localfile>
+        <localfile>
+          <location>/var/log/suricata/*/eve.json</location>
+          <log_format>json</log_format>
+          <label key="sensor.type">suricata</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/zeek/*/current/*.log</location>
+          <log_format>json</log_format>
+          <label key="sensor.type">zeek</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/silk/rwflowpack.log</location>
+          <log_format>syslog</log_format>
+          <label key="sensor.type">silk</label>
+        </localfile>
+        <localfile>
+          <location>/var/log/trivy/*/events.ndjson</location>
+          <log_format>json</log_format>
+          <label key="scanner.type">trivy</label>
+        </localfile>

@@ -1,0 +1,45 @@
+---
+# Copy this file to group_vars/all/vault.yml, replace every placeholder, then
+# encrypt it with: ansible-vault encrypt group_vars/all/vault.yml
+
+# A yescrypt/SHA-512 password hash for the ops user's sudo password. Generate
+# as documented in README; this is not the plaintext password.
+admin_password_hash: "CHANGE_ME_PASSWORD_HASH"
+
+acme_email: "CHANGE_ME@example.com"
+bootstrap_admin_htpasswd: "CHANGE_ME_BCRYPT_HTPASSWD_LINE"
+
+authentik_postgresql_password: "CHANGE_ME_ALPHANUMERIC"
+authentik_secret_key: "CHANGE_ME_50_PLUS_RANDOM_CHARS"
+authentik_bootstrap_password: "CHANGE_ME"
+authentik_bootstrap_token: "CHANGE_ME"
+authentik_bootstrap_email: "CHANGE_ME@example.com"
+
+forgejo_secret_key: "CHANGE_ME"
+forgejo_internal_token: "CHANGE_ME"
+forgejo_admin_user: "forgeadmin"
+forgejo_admin_password: "CHANGE_ME"
+forgejo_admin_email: "CHANGE_ME@example.com"
+
+signoz_postgresql_password: "CHANGE_ME_ALPHANUMERIC"
+
+scrapecast_db_password: "CHANGE_ME_ALPHANUMERIC"
+# 32-byte key, base64-encoded. Required to store per-user scrapecast secrets.
+scrapecast_secrets_encryption_key: "CHANGE_ME_BASE64"
+# Packages:read token for svc-scrapecast. Create it in Forgejo after the
+# scrapecast repo exists. Leave empty until then.
+# scrapecast_registry_pull_token: ""
+
+wazuh_indexer_admin_password: "CHANGE_ME"
+wazuh_indexer_admin_hash: "CHANGE_ME_BCRYPT_HASH"
+wazuh_dashboard_service_password: "CHANGE_ME"
+wazuh_dashboard_service_hash: "CHANGE_ME_BCRYPT_HASH"
+wazuh_api_password: "CHANGE_ME"
+
+# Optional. Required when cloudflare_dns_enabled is true, or when
+# traefik_acme_challenge is dns. Prefer a scoped API token (Zone.DNS Edit
+# and Zone.Zone Read on this zone). A Global API Key also works if you set
+# the account email with it.
+# cloudflare_api_token: "CHANGE_ME"
+# cloudflare_api_key: "CHANGE_ME"
+# cloudflare_email: "CHANGE_ME@example.com"

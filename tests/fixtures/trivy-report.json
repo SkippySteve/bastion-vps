@@ -1,0 +1,30 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "example.test/platform:fixture",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "ImageID": "sha256:fixture",
+    "RepoDigests": [
+      "example.test/platform@sha256:fixture"
+    ]
+  },
+  "Results": [
+    {
+      "Target": "debian 13",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2099-0001",
+          "PkgName": "fixture-package",
+          "InstalledVersion": "1.0",
+          "FixedVersion": "1.1",
+          "Status": "fixed",
+          "Severity": "HIGH",
+          "Title": "Fixture vulnerability",
+          "PrimaryURL": "https://example.test/CVE-2099-0001"
+        }
+      ]
+    }
+  ]
+}

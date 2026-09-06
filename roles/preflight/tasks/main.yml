@@ -1,0 +1,196 @@
+---
+- name: Map the machine architecture to release artifact names
+  ansible.builtin.set_fact:
+    preflight_platform_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] | default('unsupported') }}"
+
+- name: Read root filesystem capacity
+  ansible.builtin.command: df --output=size / --block-size=1G
+  register: preflight_root_disk_size
+  changed_when: false
+
+- name: Validate the target operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Debian'
+      - ansible_distribution_major_version == '13'
+      - preflight_platform_arch in ['amd64', 'arm64']
+    fail_msg: "This playbook supports Debian 13 on amd64 or arm64 only."
+
+- name: Validate minimum capacity
+  ansible.builtin.assert:
+    that:
+      - allow_undersized_host | bool or ansible_processor_vcpus | int >= minimum_vcpus | int
+      - allow_undersized_host | bool or ansible_memtotal_mb | int >= minimum_memory_mb | int
+      - allow_undersized_host | bool or preflight_root_disk_size.stdout_lines[-1] | trim | int >= minimum_root_disk_gb | int
+    fail_msg: >-
+      This all-in-one security/observability host needs at least
+      {{ minimum_vcpus }} vCPU, {{ minimum_memory_mb }} MiB RAM, and
+      {{ minimum_root_disk_gb }} GiB root disk. Set allow_undersized_host=true
+      only for a disposable evaluation.
+
+- name: Ensure the deployment identity and DNS values were customized
+  ansible.builtin.assert:
+    that:
+      - admin_authorized_keys | length > 0
+      - admin_authorized_keys | select('search', 'CHANGE_ME') | list | length == 0
+      - base_domain != 'example.com'
+      - base_domain is not match('.*example\\.(com|net|org)$')
+    fail_msg: "Set admin_authorized_keys and a real base_domain before running."
+
+- name: Decide whether Cloudflare credentials are required
+  ansible.builtin.set_fact:
+    preflight_cloudflare_required: "{{ (cloudflare_dns_enabled | bool) or ((traefik_acme_enabled | bool) and (traefik_acme_challenge | default('tls') == 'dns')) }}"
+    preflight_acme_challenge: "{{ traefik_acme_challenge | default('tls') }}"
+
+- name: Require a known ACME challenge when Let's Encrypt is enabled
+  ansible.builtin.assert:
+    that:
+      - preflight_acme_challenge in ['tls', 'dns']
+    fail_msg: "traefik_acme_challenge must be tls (public TCP/443) or dns (Cloudflare DNS-01)."
+  when: traefik_acme_enabled | bool
+
+- name: Require Cloudflare credentials for A records or DNS-01
+  ansible.builtin.assert:
+    that:
+      - not (base_domain.endswith('.local'))
+      - (cloudflare_api_token | default('') | length > 0) or ((cloudflare_api_key | default('') | length > 0) and (cloudflare_email | default('') | length > 0))
+      - not (cloudflare_api_token | default('') is search('CHANGE_ME'))
+      - not (cloudflare_api_key | default('') is search('CHANGE_ME'))
+      - not (cloudflare_email | default('') is search('CHANGE_ME'))
+      - cloudflare_zone | default(base_domain) | length > 0
+    fail_msg: >-
+      Cloudflare needs a non-.local base_domain and either cloudflare_api_token
+      or cloudflare_api_key plus cloudflare_email in the vault. DNS-01 also
+      copies that credential onto svc-edge for Traefik. Create a token with
+      Zone.DNS Edit and Zone.Zone Read on this zone, or use the Global API Key
+      from the Cloudflare account profile.
+  when: preflight_cloudflare_required | bool
+  no_log: true
+
+- name: Require Cloudflare A-record names when DNS automation is enabled
+  ansible.builtin.assert:
+    that:
+      - cloudflare_dns_names | default([]) | length > 0
+    fail_msg: "cloudflare_dns_enabled needs cloudflare_dns_names (auth, git, observe, security, edge, apex, www)."
+  when: cloudflare_dns_enabled | bool
+
+- name: Ensure required encrypted variables exist and have no placeholders
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default='') | length > 0
+      - not (lookup('vars', item, default='') is search('CHANGE_ME'))
+  loop:
+    - admin_password_hash
+    - acme_email
+    - bootstrap_admin_htpasswd
+    - authentik_postgresql_password
+    - authentik_secret_key
+    - authentik_bootstrap_password
+    - authentik_bootstrap_token
+    - authentik_bootstrap_email
+    - forgejo_secret_key
+    - forgejo_internal_token
+    - forgejo_admin_user
+    - forgejo_admin_password
+    - forgejo_admin_email
+    - signoz_postgresql_password
+    - wazuh_indexer_admin_password
+    - wazuh_indexer_admin_hash
+    - wazuh_dashboard_service_password
+    - wazuh_dashboard_service_hash
+    - wazuh_api_password
+  no_log: true
+
+- name: Require scrapecast secrets when the on-box app is enabled
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default='') | length > 0
+      - not (lookup('vars', item, default='') is search('CHANGE_ME'))
+  loop:
+    - scrapecast_db_password
+    - scrapecast_secrets_encryption_key
+  no_log: true
+  when: enable_scrapecast | bool
+
+- name: Require URL-safe generated database passwords
+  ansible.builtin.assert:
+    that:
+      - authentik_postgresql_password is match('^[A-Za-z0-9_-]{24,}$')
+      - signoz_postgresql_password is match('^[A-Za-z0-9_-]{24,}$')
+    fail_msg: "Database passwords must be at least 24 URL-safe characters (A-Z, a-z, 0-9, underscore, hyphen)."
+  no_log: true
+
+- name: Require a URL-safe scrapecast database password
+  ansible.builtin.assert:
+    that:
+      - scrapecast_db_password is match('^[A-Za-z0-9_-]{24,}$')
+      - scrapecast_secrets_encryption_key | length >= 40
+    fail_msg: "scrapecast_db_password must be 24+ URL-safe characters; scrapecast_secrets_encryption_key is a 32-byte base64 value."
+  no_log: true
+  when: enable_scrapecast | bool
+
+- name: Require strong bootstrap and application secrets
+  ansible.builtin.assert:
+    that:
+      - admin_password_hash is match('^\$.{20,}$')
+      - acme_email is match('^[^@\s]+@[^@\s]+\.[^@\s]+$')
+      - bootstrap_admin_htpasswd is match('^[^:]+:\$2[aby]\$12\$.{53}$')
+      - authentik_secret_key | length >= 50
+      - authentik_bootstrap_password | length >= 16
+      - authentik_bootstrap_token | length >= 32
+      - forgejo_secret_key | length >= 32
+      - forgejo_internal_token | length >= 64
+      - forgejo_admin_password | length >= 16
+    fail_msg: >-
+      Use the documented generators: a crypt-format ops hash, a valid ACME
+      email, cost-12 bcrypt Basic Auth, and sufficiently long random bootstrap
+      and application secrets.
+  no_log: true
+
+- name: Require Wazuh-compatible service passwords
+  ansible.builtin.assert:
+    that:
+      - item | length >= 12
+      - item | length <= 64
+      - item is match('^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[.*+?\-])[A-Za-z0-9.*+?\-]+$')
+    fail_msg: >-
+      Wazuh passwords must be 12-64 characters and include uppercase,
+      lowercase, a digit, and one of . * + ? -; other symbols are rejected
+      to remain safe in Compose and Wazuh configuration.
+  loop:
+    - "{{ wazuh_indexer_admin_password }}"
+    - "{{ wazuh_dashboard_service_password }}"
+    - "{{ wazuh_api_password }}"
+  no_log: true
+
+- name: Require cost-12 bcrypt hashes for Wazuh indexer identities
+  ansible.builtin.assert:
+    that: item is match('^\$2[aby]\$12\$.{53}$')
+    fail_msg: "Generate Wazuh hashes with the documented htpasswd cost-12 command."
+  loop:
+    - "{{ wazuh_indexer_admin_hash }}"
+    - "{{ wazuh_dashboard_service_hash }}"
+  no_log: true
+
+- name: Confirm every requested capture interface exists
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ item }}"
+  loop: "{{ sensor_interfaces | unique }}"
+  register: preflight_capture_interface_stats
+
+- name: Reject nonexistent capture interfaces
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "Capture interface {{ item.item }} does not exist on the target."
+  loop: "{{ preflight_capture_interface_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Explain the staged firewall behavior
+  ansible.builtin.debug:
+    msg: >-
+      firewall_lockdown_confirm is false. The candidate nftables rules will be
+      rendered but not activated. Prove SSH on TCP/{{ ssh_port }}, Forgejo SSH
+      on TCP/{{ forgejo_ssh_port }}, and HTTPS on TCP/{{ public_port }}, then
+      rerun with firewall_lockdown_confirm=true.
+  when: not firewall_lockdown_confirm | bool

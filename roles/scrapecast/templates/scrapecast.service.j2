@@ -1,0 +1,23 @@
+[Unit]
+Description=Rootless Podman Compose stack secure-scrapecast
+After=network-online.target secure-forgejo.service secure-signoz.service user@{{ service_accounts.scrapecast.uid }}.service
+Wants=network-online.target
+Requires=user@{{ service_accounts.scrapecast.uid }}.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User={{ service_accounts.scrapecast.name }}
+Group={{ service_accounts.scrapecast.name }}
+WorkingDirectory=/var/lib/{{ service_accounts.scrapecast.name }}/stacks/scrapecast
+Environment=HOME=/var/lib/{{ service_accounts.scrapecast.name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.scrapecast.uid }}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ service_accounts.scrapecast.uid }}/bus
+ExecStart=/usr/bin/podman-compose -f compose.yml up -d --remove-orphans
+ExecReload=/usr/bin/podman-compose -f compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/podman-compose -f compose.yml down
+TimeoutStartSec=0
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,78 @@
+---
+- name: Inspect the Wazuh manager mounts for indexer wiring
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - wazuh-manager
+  become: true
+  become_user: "{{ service_accounts.wazuh.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.wazuh.uid }}/bus"
+  register: platform_wazuh_manager_inspect
+  changed_when: false
+
+- name: Remember the manager etc and queue directories on the host
+  ansible.builtin.set_fact:
+    platform_wazuh_manager_etc: "{{ (platform_wazuh_manager_inspect.stdout | from_json)[0].Mounts | selectattr('Destination', 'equalto', '/var/wazuh-manager/etc') | map(attribute='Source') | first }}"
+    platform_wazuh_manager_queue: "{{ (platform_wazuh_manager_inspect.stdout | from_json)[0].Mounts | selectattr('Destination', 'equalto', '/var/wazuh-manager/queue') | map(attribute='Source') | first }}"
+
+- name: Install indexer connector certificate names the 5.x manager expects
+  ansible.builtin.copy:
+    src: "{{ wazuh_stack_dir }}/config/wazuh_manager/certs/{{ item.src }}"
+    dest: "{{ platform_wazuh_manager_etc }}/certs/{{ item.dest }}"
+    remote_src: true
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0644"
+  loop:
+    - {src: wazuh.manager.pem, dest: manager.pem}
+    - {src: wazuh.manager-key.pem, dest: manager-key.pem}
+    - {src: wazuh.manager.pem, dest: indexer-connector.pem}
+    - {src: wazuh.manager-key.pem, dest: indexer-connector-key.pem}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart secure Wazuh
+
+- name: Install the indexer CA next to the manager connector certs
+  ansible.builtin.copy:
+    src: "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.pem"
+    dest: "{{ platform_wazuh_manager_etc }}/certs/root-ca.pem"
+    remote_src: true
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0644"
+  notify: Restart secure Wazuh
+
+- name: Point the manager indexer connector at the indexer service
+  ansible.builtin.replace:
+    path: "{{ platform_wazuh_manager_etc }}/wazuh-manager.conf"
+    regexp: "https://127\\.0\\.0\\.1:9200"
+    replace: "https://wazuh.indexer:9200"
+  notify: Restart secure Wazuh
+
+- name: Check for a previous indexer keystore reset
+  ansible.builtin.stat:
+    path: "{{ wazuh_stack_dir }}/.indexer-keystore-reset"
+  register: platform_wazuh_keystore_reset
+
+- name: Discard a broken manager indexer keystore
+  ansible.builtin.file:
+    path: "{{ platform_wazuh_manager_queue }}/keystore"
+    state: absent
+  when: not platform_wazuh_keystore_reset.stat.exists
+  notify: Restart secure Wazuh
+
+- name: Remember the indexer keystore was reset
+  ansible.builtin.file:
+    path: "{{ wazuh_stack_dir }}/.indexer-keystore-reset"
+    state: touch
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0644"
+  when: not platform_wazuh_keystore_reset.stat.exists
+
+- name: Apply Wazuh indexer connector changes
+  ansible.builtin.meta: flush_handlers

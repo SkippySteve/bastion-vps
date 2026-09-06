@@ -1,0 +1,73 @@
+---
+services:
+  postgresql:
+    image: docker.io/library/postgres:16-alpine
+    container_name: authentik-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: "{{ authentik_postgresql_password }}"
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -d authentik -U authentik"]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 5s
+    volumes:
+      - database:/var/lib/postgresql/data
+
+  server:
+    image: "{{ authentik_image }}"
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    depends_on:
+      - postgresql
+    ports:
+      - "127.0.0.1:{{ authentik_http_port }}:9000"
+      - "127.0.0.1:{{ authentik_metrics_port }}:9300"
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: "{{ authentik_postgresql_password }}"
+      AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key }}"
+      AUTHENTIK_BOOTSTRAP_PASSWORD: "{{ authentik_bootstrap_password }}"
+      AUTHENTIK_BOOTSTRAP_TOKEN: "{{ authentik_bootstrap_token }}"
+      AUTHENTIK_BOOTSTRAP_EMAIL: "{{ authentik_bootstrap_email }}"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    volumes:
+      - media:/media
+      - templates:/templates
+
+  worker:
+    image: "{{ authentik_image }}"
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    depends_on:
+      - postgresql
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: "{{ authentik_postgresql_password }}"
+      AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key }}"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    volumes:
+      - media:/media
+      - templates:/templates
+      - certs:/certs
+
+volumes:
+  database: {}
+  media: {}
+  templates: {}
+  certs: {}

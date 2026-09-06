@@ -1,0 +1,90 @@
+---
+- name: Wait for the loopback Wazuh server API
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 15500
+    delay: 1
+    timeout: 300
+
+- name: Try the vault Wazuh API password
+  ansible.builtin.uri:
+    url: https://127.0.0.1:15500/security/user/authenticate?raw=true
+    method: POST
+    user: wazuh-wui
+    password: "{{ wazuh_api_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+    status_code: [200, 401]
+    timeout: 30
+  register: platform_wazuh_api_vault
+  retries: 20
+  delay: 6
+  until: platform_wazuh_api_vault.status | default(0) in [200, 401]
+  no_log: true
+
+- name: Authenticate to the Wazuh API with the image default
+  ansible.builtin.uri:
+    url: https://127.0.0.1:15500/security/user/authenticate?raw=true
+    method: POST
+    user: wazuh-wui
+    password: wazuh-wui
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+    status_code: [200]
+    timeout: 30
+  register: platform_wazuh_api_default
+  when: platform_wazuh_api_vault.status | default(0) != 200
+  no_log: true
+
+- name: Remember the Wazuh API token
+  ansible.builtin.set_fact:
+    platform_wazuh_api_token: "{{ platform_wazuh_api_extracted | trim }}"
+  vars:
+    platform_wazuh_api_login: "{{ platform_wazuh_api_vault if (platform_wazuh_api_vault.status | default(0) == 200) else platform_wazuh_api_default }}"
+    platform_wazuh_api_extracted: "{{ platform_wazuh_api_login.get('json', {}).get('data', {}).get('token') | default(platform_wazuh_api_login.get('content', ''), true) }}"
+  no_log: true
+
+- name: List Wazuh API users
+  ansible.builtin.uri:
+    url: https://127.0.0.1:15500/security/users
+    headers:
+      Authorization: "Bearer {{ platform_wazuh_api_token }}"
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  register: platform_wazuh_api_users
+  no_log: true
+
+- name: Select the wazuh-wui API user
+  ansible.builtin.set_fact:
+    platform_wazuh_wui: "{{ platform_wazuh_api_users.json.data.affected_items | selectattr('username', 'equalto', 'wazuh-wui') | first }}"
+  no_log: true
+
+- name: Allow run_as for wazuh-wui
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:15500/security/users/{{ platform_wazuh_wui.id }}/run_as?allow_run_as=true"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ platform_wazuh_api_token }}"
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  when: not (platform_wazuh_wui.allow_run_as | default(false) | bool)
+  no_log: true
+
+- name: Replace the default wazuh-wui password
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:15500/security/users/{{ platform_wazuh_wui.id }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ platform_wazuh_api_token }}"
+    body:
+      password: "{{ wazuh_api_password }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  when: platform_wazuh_api_vault.status | default(0) != 200
+  no_log: true

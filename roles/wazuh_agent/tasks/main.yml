@@ -1,0 +1,290 @@
+---
+- name: Wait for the loopback Wazuh enrollment endpoint
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 1515
+    timeout: 600
+
+- name: Install the Wazuh repository signing key
+  ansible.builtin.get_url:
+    url: "{{ wazuh_agent_gpg_key }}"
+    dest: /usr/share/keyrings/wazuh.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the Wazuh package repository
+  ansible.builtin.apt_repository:
+    repo: "{{ wazuh_agent_apt_repo }}"
+    filename: wazuh
+    state: present
+    update_cache: true
+
+- name: Allow the Wazuh agent package to move to the manager version
+  ansible.builtin.dpkg_selections:
+    name: wazuh-agent
+    selection: install
+  failed_when: false
+
+- name: Install the host Wazuh agent at the manager version
+  ansible.builtin.apt:
+    name: "wazuh-agent={{ wazuh_agent_package_version }}"
+    state: present
+    allow_downgrade: false
+  environment:
+    WAZUH_MANAGER: 127.0.0.1
+    WAZUH_REGISTRATION_SERVER: 127.0.0.1
+    WAZUH_AGENT_NAME: "{{ platform_hostname }}"
+
+- name: Locate the Wazuh agent configuration
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /var/wazuh-agent/etc/ossec.conf
+    - /var/ossec/etc/ossec.conf
+  register: wazuh_agent_conf_stat
+
+- name: Require a Wazuh agent configuration file
+  ansible.builtin.assert:
+    that: wazuh_agent_conf_stat.results | selectattr('stat.exists') | list | length >= 1
+    fail_msg: Wazuh agent did not install ossec.conf under /var/wazuh-agent or /var/ossec
+
+- name: Read the Wazuh agent service command
+  ansible.builtin.command:
+    argv:
+      - /bin/systemctl
+      - show
+      - --value
+      - -p
+      - ExecStart
+      - wazuh-agent.service
+  register: wazuh_agent_execstart
+  changed_when: false
+
+- name: Remember the Wazuh agent home from the service
+  ansible.builtin.set_fact:
+    wazuh_agent_home: "{{ wazuh_agent_execstart.stdout | regex_search('/var/(?:ossec|wazuh-agent)') | default('', true) }}"
+
+- name: Fall back to an installed ossec.conf tree
+  ansible.builtin.set_fact:
+    wazuh_agent_home: "{{ wazuh_agent_conf_stat.results | selectattr('stat.exists') | map(attribute='item') | first | dirname | dirname }}"
+  when: wazuh_agent_home | length == 0
+
+- name: Remember the Wazuh agent configuration path
+  ansible.builtin.set_fact:
+    wazuh_agent_conf: "{{ wazuh_agent_home }}/etc/ossec.conf"
+    wazuh_agent_etc: "{{ wazuh_agent_home }}/etc"
+
+- name: Point the host agent at the loopback manager
+  ansible.builtin.replace:
+    path: "{{ wazuh_agent_conf }}"
+    regexp: '(<server>\s*<address>)[^<]*(</address>)'
+    replace: '\g<1>127.0.0.1\g<2>'
+  notify: Restart Wazuh agent
+
+- name: Use the Wazuh 5 remoted port on loopback
+  ansible.builtin.replace:
+    path: "{{ wazuh_agent_conf }}"
+    regexp: '(<server>[\s\S]*?<port>)[^<]*(</port>)'
+    replace: '\g<1>1517\g<2>'
+  notify: Restart Wazuh agent
+
+- name: Inspect the Wazuh manager mounts
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - inspect
+      - wazuh-manager
+  become: true
+  become_user: "{{ service_accounts.wazuh.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
+  register: wazuh_agent_manager_inspect
+  changed_when: false
+
+- name: Remember the manager etc directory on the host
+  ansible.builtin.set_fact:
+    wazuh_agent_manager_etc: "{{ (wazuh_agent_manager_inspect.stdout | from_json)[0].Mounts | selectattr('Destination', 'equalto', '/var/wazuh-manager/etc') | map(attribute='Source') | first }}"
+
+- name: Read the manager authd password
+  ansible.builtin.slurp:
+    src: "{{ wazuh_agent_manager_etc }}/authd.pass"
+  register: wazuh_agent_manager_authd
+  failed_when: false
+  no_log: true
+
+- name: Read the manager authd password from the container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-run
+      - --user
+      - --collect
+      - --wait
+      - --pipe
+      - -p
+      - LimitMEMLOCK=infinity
+      - /usr/bin/podman
+      - exec
+      - wazuh-manager
+      - /bin/cat
+      - /var/wazuh-manager/etc/authd.pass
+  become: true
+  become_user: "{{ service_accounts.wazuh.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
+  register: wazuh_agent_manager_authd_exec
+  when: wazuh_agent_manager_authd.content is not defined
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Remember whether the manager requires an authd password
+  ansible.builtin.set_fact:
+    wazuh_agent_authd_bytes: "{{ wazuh_agent_manager_authd.content | b64decode if wazuh_agent_manager_authd.content is defined else wazuh_agent_manager_authd_exec.stdout | default('') }}"
+    wazuh_agent_has_authd_pass: "{{ (wazuh_agent_manager_authd.content is defined and (wazuh_agent_manager_authd.content | b64decode | trim | length > 0)) or (wazuh_agent_manager_authd_exec.stdout | default('') | trim | length > 0) }}"
+  no_log: true
+
+- name: Install the manager authd password on the host agent
+  ansible.builtin.copy:
+    dest: "{{ wazuh_agent_etc }}/authd.pass"
+    content: "{{ wazuh_agent_authd_bytes }}"
+    owner: root
+    group: wazuh
+    mode: "0640"
+  when: wazuh_agent_has_authd_pass | bool
+  no_log: true
+  notify: Restart Wazuh agent
+
+- name: Remove a leftover host agent authd password
+  ansible.builtin.file:
+    path: "{{ wazuh_agent_etc }}/authd.pass"
+    state: absent
+  when: not (wazuh_agent_has_authd_pass | bool)
+  notify: Restart Wazuh agent
+
+- name: Look for the Ansible enrollment marker
+  ansible.builtin.command:
+    argv:
+      - /bin/grep
+      - -F
+      - ANSIBLE ENROLLMENT
+      - "{{ wazuh_agent_conf }}"
+  register: wazuh_agent_enrollment_marker
+  changed_when: false
+  failed_when: false
+
+- name: Clear a stock enrollment block before rewriting it
+  ansible.builtin.replace:
+    path: "{{ wazuh_agent_conf }}"
+    regexp: '\s*<enrollment>[\s\S]*?</enrollment>'
+    replace: ''
+  when: wazuh_agent_enrollment_marker.rc != 0
+  notify: Restart Wazuh agent
+
+- name: Enable loopback enrollment for the host agent
+  ansible.builtin.blockinfile:
+    path: "{{ wazuh_agent_conf }}"
+    marker: "    <!-- {mark} ANSIBLE ENROLLMENT -->"
+    insertbefore: "</client>"
+    block: "{{ lookup('template', 'enrollment.xml.j2') }}"
+  notify: Restart Wazuh agent
+
+- name: Create the Trivy report readers group
+  ansible.builtin.group:
+    name: trivy-readers
+    system: true
+    state: present
+
+- name: Let the Wazuh agent read the system journal and Trivy reports
+  ansible.builtin.user:
+    name: wazuh
+    groups:
+      - systemd-journal
+      - adm
+      - trivy-readers
+    append: true
+  notify: Restart Wazuh agent
+
+- name: Let the Wazuh agent read sensor log files
+  ansible.builtin.user:
+    name: wazuh
+    groups:
+      - "{{ item }}"
+    append: true
+  loop:
+    - suricata
+    - zeek
+    - silk
+  failed_when: false
+  notify: Restart Wazuh agent
+
+- name: Add container journals, host logs, and sensor files
+  ansible.builtin.blockinfile:
+    path: "{{ wazuh_agent_conf }}"
+    marker: "  <!-- {mark} ANSIBLE SECURE PLATFORM -->"
+    insertbefore: "</ossec_config>"
+    block: "{{ lookup('template', 'localfiles.xml.j2') }}"
+  notify: Restart Wazuh agent
+
+- name: Extend the existing Wazuh file-integrity policy to stack and host config
+  ansible.builtin.blockinfile:
+    path: "{{ wazuh_agent_conf }}"
+    marker: "    <!-- {mark} ANSIBLE STACK FIM -->"
+    insertbefore: "  </syscheck>"
+    block: |2
+          <directories check_all="yes" realtime="yes">{{ wazuh_stack_fim_paths | join(',') }}</directories>
+          <directories check_all="yes" realtime="yes">/etc/ssh,/etc/fail2ban,/etc/nftables.conf,/etc/sudoers,/etc/sudoers.d</directories>
+          <ignore type="sregex">.*/(\.git|cache|data|logs|queue|storage|volumes|work)/.*</ignore>
+  notify: Restart Wazuh agent
+
+- name: Prevent unplanned Wazuh package upgrades beyond the manager
+  ansible.builtin.dpkg_selections:
+    name: wazuh-agent
+    selection: hold
+
+- name: Read the manager agent keystore
+  ansible.builtin.command:
+    argv:
+      - /bin/cat
+      - "{{ wazuh_agent_manager_etc }}/client.keys"
+  register: wazuh_agent_manager_keys
+  changed_when: false
+  failed_when: false
+
+- name: Stop the host agent before re-enrollment
+  ansible.builtin.systemd_service:
+    name: wazuh-agent.service
+    state: stopped
+  when: platform_hostname not in (wazuh_agent_manager_keys.stdout | default(''))
+
+- name: Drop stale host agent keys
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ wazuh_agent_etc }}/client.keys"
+    - /var/ossec/etc/client.keys
+    - /var/wazuh-agent/etc/client.keys
+  when: platform_hostname not in (wazuh_agent_manager_keys.stdout | default(''))
+
+- name: Enable the Wazuh host agent
+  ansible.builtin.systemd_service:
+    name: wazuh-agent.service
+    enabled: true
+    state: started
+
+- name: Apply host agent enrollment changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until the manager lists this host
+  ansible.builtin.command:
+    argv:
+      - /bin/cat
+      - "{{ wazuh_agent_manager_etc }}/client.keys"
+  register: wazuh_agent_enrolled
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: platform_hostname in (wazuh_agent_enrolled.stdout | default(''))

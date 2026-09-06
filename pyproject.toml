@@ -1,0 +1,12 @@
+[project]
+name = "debian13-secure-platform"
+version = "0.0.0"
+description = "Ansible controller environment for the Debian 13 secure platform playbook"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ansible-core>=2.18,<2.20",
+]
+
+[tool.uv]
+managed = true

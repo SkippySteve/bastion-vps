@@ -1,0 +1,34 @@
+[Unit]
+Description=Rootless Podman Compose stack {{ item.name }}
+After={{ item.after }} user@{{ service_accounts[item.account].uid }}.service
+Wants=network-online.target
+Requires=user@{{ service_accounts[item.account].uid }}.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User={{ service_accounts[item.account].name }}
+Group={{ service_accounts[item.account].name }}
+WorkingDirectory=/var/lib/{{ service_accounts[item.account].name }}/stacks/{{ item.directory }}
+Environment=HOME=/var/lib/{{ service_accounts[item.account].name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ service_accounts[item.account].uid }}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ service_accounts[item.account].uid }}/bus
+{% if item.compose_services | default([]) %}
+ExecStart=/usr/bin/podman-compose -f {{ item.compose }} up --no-start --remove-orphans --no-deps {{ item.compose_services | join(' ') }}
+ExecStart=/usr/bin/podman start --all
+ExecReload=/usr/bin/podman-compose -f {{ item.compose }} up --no-start --remove-orphans --no-deps {{ item.compose_services | join(' ') }}
+ExecReload=/usr/bin/podman start --all
+{% else %}
+ExecStart=/usr/bin/podman-compose -f {{ item.compose }} up -d --remove-orphans
+ExecReload=/usr/bin/podman-compose -f {{ item.compose }} up -d --remove-orphans
+{% endif %}
+ExecStop=/usr/bin/podman-compose -f {{ item.compose }} down
+TimeoutStartSec={{ item.timeout_start_sec | default(0) }}
+TimeoutStopSec=180
+{% if item.account == 'wazuh' %}
+LimitMEMLOCK=infinity
+LimitNOFILE=1048576
+{% endif %}
+
+[Install]
+WantedBy=multi-user.target

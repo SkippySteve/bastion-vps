@@ -1,0 +1,49 @@
+---
+- name: Resolve the IPv4 address published in Cloudflare
+  ansible.builtin.set_fact:
+    cloudflare_dns_ipv4: "{{ cloudflare_record_ipv4 | default(ansible_default_ipv4.address, true) }}"
+
+- name: Require a usable IPv4 address for Cloudflare records
+  ansible.builtin.assert:
+    that:
+      - cloudflare_dns_ipv4 is match('^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')
+    fail_msg: >-
+      Cloudflare DNS needs an IPv4 address. Set cloudflare_record_ipv4 if
+      ansible_default_ipv4.address is not the address that should appear in
+      DNS.
+
+- name: Detect RFC1918, loopback, and link-local Cloudflare targets
+  ansible.builtin.set_fact:
+    cloudflare_dns_ipv4_is_private: "{{ cloudflare_dns_ipv4 is match('^(10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.)') }}"
+
+- name: Reject private A-record targets when TLS-ALPN is in use
+  ansible.builtin.assert:
+    that:
+      - not (cloudflare_dns_ipv4_is_private | bool)
+    fail_msg: >-
+      traefik_acme_challenge is tls, so Let's Encrypt must connect to this
+      address on TCP/443. A private, loopback, or link-local address cannot
+      answer that. Use traefik_acme_challenge: dns, or publish a public IPv4
+      in cloudflare_record_ipv4.
+  when:
+    - traefik_acme_enabled | bool
+    - traefik_acme_challenge | default('tls') == 'tls'
+
+- name: Create DNS-only A records for the public application names
+  community.general.cloudflare_dns:
+    zone: "{{ cloudflare_zone }}"
+    record: "{{ '@' if item in [cloudflare_zone, base_domain, app_fqdn] else item }}"
+    type: A
+    value: "{{ cloudflare_dns_ipv4 }}"
+    proxied: false
+    solo: true
+    state: present
+    api_token: "{{ cloudflare_api_token if (cloudflare_api_token | default('') | length > 0) else omit }}"
+    account_api_key: "{{ cloudflare_api_key if (cloudflare_api_key | default('') | length > 0) else omit }}"
+    account_email: "{{ cloudflare_email if (cloudflare_email | default('') | length > 0) else omit }}"
+  loop: "{{ cloudflare_dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  delegate_to: localhost
+  become: false
+  no_log: true

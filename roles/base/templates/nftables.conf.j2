@@ -1,0 +1,29 @@
+#!/usr/sbin/nft -f
+
+# Inbound TCP/{{ ssh_port }} (OpenSSH), TCP/{{ forgejo_ssh_port }} (Forgejo SSH),
+# and TCP/{{ public_port }} (Traefik TLS) are admitted. Loopback, established
+# return traffic, and control-plane ICMP/ICMPv6 remain functional. Outbound
+# traffic is allowed so DNS, NTP, ACME, OIDC, package updates, and telemetry
+# export work.
+destroy table inet ansible_filter
+table inet ansible_filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state invalid drop
+    ct state established,related accept
+    ip protocol icmp icmp type { destination-unreachable, time-exceeded, parameter-problem, echo-request } accept
+    ip6 nexthdr ipv6-icmp accept
+    tcp dport { {{ ssh_port }}, {{ forgejo_ssh_port }}, {{ public_port }} } ct state new accept
+    counter log prefix "nft-input-drop " flags all limit rate 5/second drop
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}

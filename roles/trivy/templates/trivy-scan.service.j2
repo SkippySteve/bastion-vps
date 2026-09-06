@@ -1,0 +1,32 @@
+[Unit]
+Description=Scan {{ item.value.name }} rootless Podman images with Trivy
+After=network-online.target user@{{ item.value.uid }}.service
+Wants=network-online.target
+Requires=user@{{ item.value.uid }}.service
+
+[Service]
+Type=oneshot
+User={{ item.value.name }}
+Group={{ item.value.name }}
+Environment=HOME=/var/lib/{{ item.value.name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ item.value.uid }}
+ExecStart=/usr/local/libexec/trivy-platform-scan --account {{ item.key }} --report-dir /var/log/trivy/{{ item.value.name }} --cache-dir /var/lib/{{ item.value.name }}/.cache/trivy-platform --podman-host /run/user/{{ item.value.uid }}/podman/podman.sock --scanners {{ trivy_scanners }} --timeout {{ trivy_scan_timeout_seconds }} --retention-days {{ trivy_report_retention_days }}
+TimeoutStartSec={{ trivy_scan_timeout_seconds + 60 }}
+UMask=0007
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/{{ item.value.name }}/.cache/trivy-platform /var/log/trivy/{{ item.value.name }} /run/user/{{ item.value.uid }}

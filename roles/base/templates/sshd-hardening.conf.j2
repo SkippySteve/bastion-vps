@@ -1,0 +1,21 @@
+# Managed by Ansible. Public-key auth only on TCP {{ ssh_port }}.
+Port {{ ssh_port }}
+ListenAddress 0.0.0.0
+AddressFamily inet
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitEmptyPasswords no
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+GatewayPorts no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+MaxAuthTries 3
+LoginGraceTime 30
+AllowUsers {{ admin_user }}

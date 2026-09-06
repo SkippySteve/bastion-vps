@@ -1,0 +1,29 @@
+[Unit]
+Description=OpenTelemetry Podman stats collector for {{ item.value.name }}
+After=network-online.target user@{{ item.value.uid }}.service
+Wants=network-online.target
+Requires=user@{{ item.value.uid }}.service
+
+[Service]
+Type=simple
+User={{ item.value.name }}
+Group={{ item.value.name }}
+Environment=HOME=/var/lib/{{ item.value.name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ item.value.uid }}
+ExecStart=/usr/bin/otelcol-contrib --config=/var/lib/{{ item.value.name }}/.config/otelcol-podman.yml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

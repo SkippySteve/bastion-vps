@@ -1,0 +1,10 @@
+---
+- name: Reload Trivy units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart secure Wazuh for Trivy
+  ansible.builtin.systemd_service:
+    name: secure-wazuh.service
+    state: restarted
+  failed_when: false

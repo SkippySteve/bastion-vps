@@ -1,0 +1,171 @@
+---
+- name: Remember the Wazuh stack path for Trivy rules
+  ansible.builtin.set_fact:
+    trivy_wazuh_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
+
+- name: Create the versioned Trivy installation directory
+  ansible.builtin.file:
+    path: "/opt/trivy/{{ trivy_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the pinned Trivy release
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/aquasecurity/trivy/releases/download/v{{ trivy_version
+      }}/trivy_{{ trivy_version }}_Linux-{{ trivy_release_arch[preflight_platform_arch] }}.tar.gz
+    dest: "/usr/local/src/trivy_{{ trivy_version }}_Linux-{{ trivy_release_arch[preflight_platform_arch] }}.tar.gz"
+    checksum: "sha256:{{ artifact_checksums.trivy[preflight_platform_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack the pinned Trivy binary
+  ansible.builtin.unarchive:
+    src: "/usr/local/src/trivy_{{ trivy_version }}_Linux-{{ trivy_release_arch[preflight_platform_arch] }}.tar.gz"
+    dest: "/opt/trivy/{{ trivy_version }}"
+    remote_src: true
+    creates: "/opt/trivy/{{ trivy_version }}/trivy"
+    extra_opts:
+      - --no-same-owner
+
+- name: Own the extracted Trivy binary as root
+  ansible.builtin.file:
+    path: "/opt/trivy/{{ trivy_version }}/trivy"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Link the active Trivy version
+  ansible.builtin.file:
+    src: "/opt/trivy/{{ trivy_version }}/trivy"
+    dest: /usr/local/bin/trivy
+    state: link
+    force: true
+
+- name: Install the rootless Podman image scanner
+  ansible.builtin.template:
+    src: trivy-platform-scan.py.j2
+    dest: /usr/local/libexec/trivy-platform-scan
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Validate the image scanner syntax
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "compile(open('/usr/local/libexec/trivy-platform-scan').read(), 'trivy-platform-scan', 'exec')"
+  changed_when: false
+
+- name: Create the Trivy report readers group
+  ansible.builtin.group:
+    name: trivy-readers
+    system: true
+    state: present
+
+- name: Create the Trivy report root
+  ansible.builtin.file:
+    path: /var/log/trivy
+    state: directory
+    owner: root
+    group: trivy-readers
+    mode: "0750"
+
+- name: Create isolated report directories
+  ansible.builtin.file:
+    path: "/var/log/trivy/{{ item.value.name }}"
+    state: directory
+    owner: "{{ item.value.name }}"
+    group: trivy-readers
+    mode: "2750"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+
+- name: Create private Trivy caches and state directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ item.value.name }}/.cache/trivy-platform"
+    state: directory
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0700"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+
+- name: Create the Wazuh custom rules source directory
+  ansible.builtin.file:
+    path: "{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules"
+    state: directory
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0750"
+
+- name: Install Wazuh 5 rules for normalized Trivy events
+  ansible.builtin.template:
+    src: trivy-rules.xml.j2
+    dest: "{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules/trivy_rules.xml"
+    owner: "{{ service_accounts.wazuh.name }}"
+    group: "{{ service_accounts.wazuh.name }}"
+    mode: "0644"
+  notify: Restart secure Wazuh for Trivy
+
+- name: Validate the Trivy Wazuh rule XML
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "import xml.etree.ElementTree as ET; ET.parse('{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules/trivy_rules.xml')"
+  changed_when: false
+
+- name: Install per-account Trivy scanner units
+  ansible.builtin.template:
+    src: trivy-scan.service.j2
+    dest: "/etc/systemd/system/trivy-scan-{{ item.value.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+  notify: Reload Trivy units
+
+- name: Install staggered per-account Trivy timers
+  ansible.builtin.template:
+    src: trivy-scan.timer.j2
+    dest: "/etc/systemd/system/trivy-scan-{{ item.value.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    index_var: trivy_timer_index
+    label: "{{ item.value.name }}"
+  notify: Reload Trivy units
+
+- name: Install Trivy event-stream retention rules
+  ansible.builtin.template:
+    src: trivy-logrotate.j2
+    dest: "/etc/logrotate.d/trivy-{{ item.value.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+
+- name: Apply Trivy unit and Wazuh rule changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable staggered Trivy scans
+  ansible.builtin.systemd_service:
+    name: "trivy-scan-{{ item.value.name }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull new scrapecast images on a short interval
+After=secure-scrapecast.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=scrapecast-update.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+unqualified-search-registries = ["docker.io"]
+
+# Same-host Forgejo Packages. HTTPS through Traefik and the WAF breaks the
+# OCI protocol, and the public git name hairpins. Pull and push on loopback.
+[[registry]]
+prefix = "127.0.0.1:{{ forgejo_http_port }}"
+location = "127.0.0.1:{{ forgejo_http_port }}"
+insecure = true

@@ -1,0 +1,48 @@
+---
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:{{ forgejo_version }}-rootless
+    container_name: forgejo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:{{ forgejo_http_port }}:3000"
+      - "0.0.0.0:{{ forgejo_ssh_port }}:2222"
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__DOMAIN: "{{ git_fqdn }}"
+      FORGEJO__server__ROOT_URL: "https://{{ git_fqdn }}/"
+      FORGEJO__server__HTTP_PORT: "3000"
+      # Host OpenSSH keeps TCP/22 for ops. Forgejo's own SSH listens on 2222.
+      FORGEJO__server__DISABLE_SSH: "false"
+      FORGEJO__server__START_SSH_SERVER: "true"
+      FORGEJO__server__SSH_DOMAIN: "{{ git_fqdn }}"
+      FORGEJO__server__SSH_PORT: "{{ forgejo_ssh_port }}"
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__database__PATH: /var/lib/gitea/data/forgejo.db
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: "{{ forgejo_secret_key }}"
+      FORGEJO__security__INTERNAL_TOKEN: "{{ forgejo_internal_token }}"
+      FORGEJO__security__REVERSE_PROXY_TRUSTED_PROXIES: 127.0.0.0/8
+      FORGEJO__security__REVERSE_PROXY_LIMIT: "1"
+      FORGEJO__service__DISABLE_REGISTRATION: "false"
+      FORGEJO__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
+      FORGEJO__service__DEFAULT_USER_IS_RESTRICTED: "true"
+      FORGEJO__service__DEFAULT_ALLOW_CREATE_ORGANIZATION: "false"
+      FORGEJO__service__DEFAULT_USER_VISIBILITY: private
+      FORGEJO__service__DEFAULT_ORG_VISIBILITY: private
+      FORGEJO__metrics__ENABLED: "true"
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__packages__ENABLED: "true"
+      FORGEJO__log__MODE: console
+      FORGEJO__log__LEVEL: Info
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - forgejo-config:/etc/gitea
+
+volumes:
+  forgejo-data: {}
+  forgejo-config: {}

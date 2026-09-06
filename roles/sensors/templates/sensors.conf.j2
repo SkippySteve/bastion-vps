@@ -1,0 +1,15 @@
+{% for interface in sensor_interfaces | unique %}
+probe {{ interface | regex_replace('[^A-Za-z0-9.-]', '-') }} ipfix
+  listen-on-port {{ silk_ipfix_base_port + loop.index0 }}
+  protocol tcp
+  listen-as-host 127.0.0.1
+  accept-from-host 127.0.0.1
+end probe
+
+sensor {{ interface | regex_replace('[^A-Za-z0-9.-]', '-') }}
+  ipfix-probes {{ interface | regex_replace('[^A-Za-z0-9.-]', '-') }}
+  internal-ipblocks {{ silk_internal_networks | join(' ') }}
+  external-ipblocks remainder
+end sensor
+
+{% endfor %}

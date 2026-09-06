@@ -1,0 +1,80 @@
+---
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    container_name: scrapecast-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scrapecast
+      POSTGRES_DB: scrapecast
+      POSTGRES_PASSWORD: "{{ scrapecast_db_password }}"
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -d scrapecast -U scrapecast"]
+      start_period: 20s
+      interval: 10s
+      retries: 8
+      timeout: 5s
+    volumes:
+      - postgres:/var/lib/postgresql/data
+
+  evasion:
+    image: "{{ scrapecast_registry }}/{{ scrapecast_image_repository }}/evasion:{{ scrapecast_image_tag }}"
+    container_name: scrapecast-evasion
+    restart: unless-stopped
+    extra_hosts:
+      - "host.containers.internal:{{ otel_host_loopback_addr }}"
+    environment:
+      EVASION_PORT: "43149"
+      OTEL_SERVICE_NAME: scrapecast-evasion
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.containers.internal:{{ host_otlp_http_port }}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  scraper:
+    image: "{{ scrapecast_registry }}/{{ scrapecast_image_repository }}/scraper:{{ scrapecast_image_tag }}"
+    container_name: scrapecast-scraper
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      evasion:
+        condition: service_started
+    extra_hosts:
+      - "host.containers.internal:{{ otel_host_loopback_addr }}"
+    ports:
+      - "127.0.0.1:{{ scrapecast_api_port }}:43148"
+    environment:
+      DATABASE_URL: "postgres://scrapecast:{{ scrapecast_db_password }}@postgres:5432/scrapecast?sslmode=disable"
+      SCRAPER_PORT: "43148"
+      SCRAPER_BASE_URL: "https://{{ app_fqdn }}"
+      EVASION_URL: http://evasion:43149
+      AUTH_MODE: "{{ scrapecast_auth_mode }}"
+      AUTH_ADMIN_GROUPS: admin,admins,scrapecast-admins
+      SECRETS_ENCRYPTION_KEY: "{{ scrapecast_secrets_encryption_key }}"
+      OTEL_SERVICE_NAME: scrapecast-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.containers.internal:{{ host_otlp_http_port }}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  web:
+    image: "{{ scrapecast_registry }}/{{ scrapecast_image_repository }}/web:{{ scrapecast_image_tag }}"
+    container_name: scrapecast-web
+    restart: unless-stopped
+    depends_on:
+      - scraper
+    extra_hosts:
+      - "host.containers.internal:{{ otel_host_loopback_addr }}"
+    ports:
+      - "127.0.0.1:{{ scrapecast_web_port }}:43147"
+    environment:
+      SCRAPER_URL: http://scraper:43148
+      OTEL_SERVICE_NAME: scrapecast-web
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.containers.internal:{{ host_otlp_http_port }}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+volumes:
+  postgres: {}

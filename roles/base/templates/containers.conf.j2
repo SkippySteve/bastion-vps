@@ -1,0 +1,13 @@
+[containers]
+log_driver = "journald"
+tz = "UTC"
+pids_limit = 2048
+
+[engine]
+events_logger = "journald"
+runtime = "crun"
+{% if (item.key | default('')) in ['edge', 'scrapecast'] %}
+
+[network]
+pasta_options = ["--map-host-loopback", "{{ otel_host_loopback_addr }}"]
+{% endif %}

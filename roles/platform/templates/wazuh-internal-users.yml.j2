@@ -1,0 +1,18 @@
+---
+# Managed by Ansible. The unused upstream demo identities are intentionally
+# removed; only the administrator and dashboard service identity remain.
+_meta:
+  type: internalusers
+  config_version: 2
+
+admin:
+  hash: "{{ wazuh_indexer_admin_hash }}"
+  reserved: true
+  backend_roles:
+    - admin
+  description: Platform indexer administrator
+
+kibanaserver:
+  hash: "{{ wazuh_dashboard_service_hash }}"
+  reserved: true
+  description: Wazuh dashboard service identity

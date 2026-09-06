@@ -1,0 +1,756 @@
+---
+- name: Render every shipped template for static validation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all/main.yml
+    - ../group_vars/all/vault.yml.example
+  vars:
+    render_root: /tmp/debian13-secure-platform-render
+    base_domain: test.example.net
+    ansible_default_ipv4:
+      interface: eth0
+      network: 192.0.2.0
+      prefix: 24
+    preflight_platform_arch: amd64
+    traefik_dynamic_directory: "{{ render_root }}/dynamic"
+    traefik_acme_storage: "{{ render_root }}/acme.json"
+    traefik_acme_ca_server: https://127.0.0.1:9/directory
+    platform_rootless_stack_units:
+      - name: secure-edge
+        account: edge
+        directory: edge
+        compose: compose.yml
+        after: network-online.target
+      - name: secure-wazuh
+        account: wazuh
+        directory: wazuh/upstream/single-node
+        compose: compose.secure.yml
+        after: network-online.target
+      - name: secure-signoz
+        account: signoz
+        directory: signoz/pours/deployment
+        compose: compose.yaml
+        after: network-online.target
+        compose_services:
+          - signoz-signoz-0
+
+  tasks:
+    - name: Reset render output directory
+      ansible.builtin.file:
+        path: "{{ render_root }}"
+        state: absent
+
+    - name: Create render output directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ render_root }}"
+        - "{{ render_root }}/dynamic"
+
+    - name: Create the test ACME state file
+      ansible.builtin.file:
+        path: "{{ traefik_acme_storage }}"
+        state: touch
+        mode: "0600"
+
+    - name: Render templates that do not use a loop item
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ render_root }}/{{ item.dest }}"
+        mode: "0600"
+      vars:
+        bootstrap_admin_htpasswd: 'bootstrap:$apr1$bB8Hc9SM$6oRbSymnTDkibTWzxZLSK1'
+      loop:
+        - {src: ../roles/base/templates/containers.conf.j2, dest: containers.conf}
+        - {src: ../roles/base/templates/sshd-hardening.conf.j2, dest: sshd.conf}
+        - {src: ../roles/base/templates/nftables.conf.j2, dest: nftables.conf}
+        - {src: ../roles/platform/templates/traefik-compose.yml.j2, dest: traefik-compose.yml}
+        - {src: ../roles/platform/templates/traefik-static.yml.j2, dest: traefik-static.yml}
+        - {src: ../roles/platform/templates/traefik-dynamic.yml.j2, dest: dynamic/platform.yml}
+        - {src: ../roles/platform/templates/lab-tls.cnf.j2, dest: lab-tls.cnf}
+        - {src: ../roles/platform/templates/waf-compose.yml.j2, dest: waf-compose.yml}
+        - {src: ../roles/platform/templates/waf-default.conf.template.j2, dest: waf.conf}
+        - {src: ../roles/platform/templates/authentik-compose.yml.j2, dest: authentik-compose.yml}
+        - {src: ../roles/platform/templates/forgejo-compose.yml.j2, dest: forgejo-compose.yml}
+        - {src: ../roles/platform/templates/signoz-casting.yml.j2, dest: signoz-casting.yml}
+        - {src: ../roles/platform/templates/wazuh-compose.yml.j2, dest: wazuh-compose.yml}
+        - {src: ../roles/platform/templates/wazuh-internal-users.yml.j2, dest: wazuh-internal-users.yml}
+        - {src: ../roles/telemetry/templates/host-otelcol.yml.j2, dest: host-otelcol.yml}
+        - {src: ../roles/sensors/templates/suricata-platform.service.j2, dest: suricata.service}
+        - {src: ../roles/sensors/templates/suricata-platform.yaml.j2, dest: suricata-platform.yaml}
+        - {src: ../roles/sensors/templates/zeek@.service.j2, dest: zeek.service}
+        - {src: ../roles/sensors/templates/zeek.logrotate.j2, dest: zeek.logrotate}
+        - {src: ../roles/sensors/templates/silk.conf.j2, dest: silk.conf}
+        - {src: ../roles/sensors/templates/sensors.conf.j2, dest: sensors.conf}
+        - {src: ../roles/sensors/templates/silk-rwflowpack.service.j2, dest: silk.service}
+        - {src: ../roles/runner/templates/runner-config.yml.j2, dest: runner-config.yml}
+        - {src: ../roles/runner/templates/forgejo-runner.service.j2, dest: runner.service}
+        - {src: ../roles/base/templates/registries.conf.j2, dest: registries.conf}
+        - {src: ../roles/scrapecast/templates/compose.yml.j2, dest: scrapecast-compose.yml}
+        - {src: ../roles/scrapecast/templates/scrapecast.service.j2, dest: scrapecast.service}
+        - {src: ../roles/scrapecast/templates/scrapecast-update.service.j2, dest: scrapecast-update.service}
+        - {src: ../roles/scrapecast/templates/scrapecast-update.timer.j2, dest: scrapecast-update.timer}
+        - {src: ../roles/fail2ban/templates/jail.d/platform.local.j2, dest: fail2ban-jail.local}
+        - {src: ../roles/fail2ban/templates/filter.d/forgejo.conf.j2, dest: fail2ban-forgejo.conf}
+        - {src: ../roles/fail2ban/templates/action.d/nftables-waf.conf.j2, dest: fail2ban-nftables-waf.conf}
+        - {src: ../roles/trivy/templates/trivy-platform-scan.py.j2, dest: trivy-platform-scan}
+        - {src: ../roles/trivy/templates/trivy-rules.xml.j2, dest: trivy-rules.xml}
+
+    - name: Render per-account Trivy scanner units
+      ansible.builtin.template:
+        src: ../roles/trivy/templates/trivy-scan.service.j2
+        dest: "{{ render_root }}/trivy-scan-{{ item.value.name }}.service"
+        mode: "0600"
+      loop: "{{ service_accounts | dict2items }}"
+
+    - name: Render per-account Trivy timers
+      ansible.builtin.template:
+        src: ../roles/trivy/templates/trivy-scan.timer.j2
+        dest: "{{ render_root }}/trivy-scan-{{ item.value.name }}.timer"
+        mode: "0600"
+      loop: "{{ service_accounts | dict2items }}"
+      loop_control:
+        index_var: trivy_timer_index
+
+    - name: Render per-account Trivy log rotation
+      ansible.builtin.template:
+        src: ../roles/trivy/templates/trivy-logrotate.j2
+        dest: "{{ render_root }}/trivy-{{ item.value.name }}.logrotate"
+        mode: "0600"
+      loop: "{{ service_accounts | dict2items }}"
+
+    - name: Render Traefik dynamic config in lab TLS mode
+      ansible.builtin.template:
+        src: ../roles/platform/templates/traefik-dynamic.yml.j2
+        dest: "{{ render_root }}/dynamic/platform.lab.yml"
+        mode: "0600"
+      vars:
+        traefik_acme_enabled: false
+        protect_admin_apps_with_authentik: false
+        bootstrap_admin_htpasswd: 'bootstrap:$apr1$bB8Hc9SM$6oRbSymnTDkibTWzxZLSK1'
+
+    - name: Read the lab Traefik dynamic YAML
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/dynamic/platform.lab.yml"
+      register: traefik_lab_raw
+
+    - name: Decode the lab Traefik dynamic YAML
+      ansible.builtin.set_fact:
+        traefik_lab_dynamic: "{{ traefik_lab_raw.content | b64decode | from_yaml }}"
+
+    - name: Require lab routers to stay distinct mappings
+      ansible.builtin.assert:
+        that:
+          - traefik_lab_dynamic.http.routers.authentik.tls == {}
+          - traefik_lab_dynamic.http.routers.authentik.observability.tracing | bool
+          - traefik_lab_dynamic.http.routers.authentik.observability.metrics | bool
+          - traefik_lab_dynamic.http.routers.authentik.observability.accessLogs | bool
+          - traefik_lab_dynamic.http.routers.forgejo.service == "waf"
+          - traefik_lab_dynamic.http.routers.scrapecast.rule == "Host(`" ~ app_fqdn ~ "`)"
+          - traefik_lab_dynamic.http.routers['scrapecast-www'].middlewares == ["www-to-apex", "public-chain"]
+          - traefik_lab_dynamic.http.routers.signoz.middlewares == ["bootstrap-admin-chain"]
+          - traefik_lab_dynamic.http.routers['traefik-dashboard'] is not defined
+          - traefik_lab_dynamic.tls.certificates | length == 1
+
+    - name: Render Traefik static config for TLS-ALPN ACME
+      ansible.builtin.template:
+        src: ../roles/platform/templates/traefik-static.yml.j2
+        dest: "{{ render_root }}/traefik-static.tls.yml"
+        mode: "0600"
+      vars:
+        traefik_acme_enabled: true
+        traefik_acme_challenge: tls
+
+    - name: Render Traefik static config and Compose for DNS-01 ACME
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ render_root }}/{{ item.dest }}"
+        mode: "0600"
+      vars:
+        traefik_acme_enabled: true
+        traefik_acme_challenge: dns
+        cloudflare_api_token: "render-test-token"
+      loop:
+        - {src: ../roles/platform/templates/traefik-static.yml.j2, dest: traefik-static.dns.yml}
+        - {src: ../roles/platform/templates/traefik-compose.yml.j2, dest: traefik-compose.dns.yml}
+        - {src: ../roles/platform/templates/traefik-cloudflare.env.j2, dest: cloudflare.env}
+
+    - name: Read ACME Traefik YAML
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/traefik-static.tls.yml"
+        - "{{ render_root }}/traefik-static.dns.yml"
+        - "{{ render_root }}/traefik-compose.dns.yml"
+        - "{{ render_root }}/cloudflare.env"
+      register: traefik_acme_raw
+
+    - name: Decode ACME Traefik YAML
+      ansible.builtin.set_fact:
+        traefik_static_tls: "{{ traefik_acme_raw.results[0].content | b64decode | from_yaml }}"
+        traefik_static_dns: "{{ traefik_acme_raw.results[1].content | b64decode | from_yaml }}"
+        traefik_compose_dns: "{{ traefik_acme_raw.results[2].content | b64decode | from_yaml }}"
+        traefik_cloudflare_env: "{{ traefik_acme_raw.results[3].content | b64decode }}"
+
+    - name: Require TLS-ALPN and DNS-01 ACME to stay distinct
+      ansible.builtin.assert:
+        that:
+          - traefik_static_tls.certificatesResolvers.letsencrypt.acme.tlsChallenge == {}
+          - traefik_static_tls.certificatesResolvers.letsencrypt.acme.dnsChallenge is not defined
+          - traefik_static_dns.certificatesResolvers.letsencrypt.acme.dnsChallenge.provider == "cloudflare"
+          - traefik_static_dns.certificatesResolvers.letsencrypt.acme.tlsChallenge is not defined
+          - traefik_compose_dns.services.traefik.env_file == ["./cloudflare.env"]
+          - "'CF_DNS_API_TOKEN=render-test-token' in traefik_cloudflare_env"
+
+    - name: Render Traefik dynamic config with Authentik forward auth
+      ansible.builtin.template:
+        src: ../roles/platform/templates/traefik-dynamic.yml.j2
+        dest: "{{ render_root }}/dynamic/platform.protect.yml"
+        mode: "0600"
+      vars:
+        traefik_acme_enabled: false
+        protect_admin_apps_with_authentik: true
+        bootstrap_admin_htpasswd: 'bootstrap:$apr1$bB8Hc9SM$6oRbSymnTDkibTWzxZLSK1'
+
+    - name: Read the forward-auth Traefik dynamic YAML
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/dynamic/platform.protect.yml"
+      register: traefik_protect_raw
+
+    - name: Decode the forward-auth Traefik dynamic YAML
+      ansible.builtin.set_fact:
+        traefik_protect_dynamic: "{{ traefik_protect_raw.content | b64decode | from_yaml }}"
+
+    - name: Require outpost callbacks to skip the WAF
+      ansible.builtin.assert:
+        that:
+          - traefik_protect_dynamic.http.routers.signoz.middlewares == ["admin-chain"]
+          - traefik_protect_dynamic.http.routers['traefik-dashboard'].service == "api@internal"
+          - traefik_protect_dynamic.http.services['authentik-outpost'].loadBalancer.servers[0].url == "http://127.0.0.1:19000"
+
+    - name: Read rendered CI and scrapecast files
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/forgejo-compose.yml"
+        - "{{ render_root }}/runner-config.yml"
+        - "{{ render_root }}/registries.conf"
+        - "{{ render_root }}/waf.conf"
+        - "{{ render_root }}/scrapecast-compose.yml"
+        - "{{ render_root }}/waf-compose.yml"
+      register: scrapecast_render_raw
+
+    - name: Decode rendered CI and scrapecast files
+      ansible.builtin.set_fact:
+        render_forgejo_compose: "{{ scrapecast_render_raw.results[0].content | b64decode | from_yaml }}"
+        render_runner_config: "{{ scrapecast_render_raw.results[1].content | b64decode | from_yaml }}"
+        render_registries_conf: "{{ scrapecast_render_raw.results[2].content | b64decode }}"
+        render_waf_conf: "{{ scrapecast_render_raw.results[3].content | b64decode }}"
+        render_scrapecast_compose: "{{ scrapecast_render_raw.results[4].content | b64decode | from_yaml }}"
+        render_waf_compose: "{{ scrapecast_render_raw.results[5].content | b64decode | from_yaml }}"
+
+    - name: Read rendered sshd and nftables
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/sshd.conf"
+        - "{{ render_root }}/nftables.conf"
+      register: render_ssh_nft_raw
+
+    - name: Decode rendered sshd and nftables
+      ansible.builtin.set_fact:
+        render_sshd_conf: "{{ render_ssh_nft_raw.results[0].content | b64decode }}"
+        render_nftables_conf: "{{ render_ssh_nft_raw.results[1].content | b64decode }}"
+
+    - name: Require Forgejo builtin SSH on 2222 and host OpenSSH for ops only
+      ansible.builtin.assert:
+        that:
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__server__DISABLE_SSH == "false"
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__server__START_SSH_SERVER == "true"
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__server__SSH_PORT == "2222"
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__server__SSH_LISTEN_PORT == "2222"
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__security__REVERSE_PROXY_LIMIT == "1"
+          - '"0.0.0.0:2222:2222" in render_forgejo_compose.services.forgejo.ports'
+          - '"127.0.0.1:13000:3000" in render_forgejo_compose.services.forgejo.ports'
+          - "'AllowUsers ops' in render_sshd_conf"
+          - "'AllowUsers ops git' not in render_sshd_conf"
+          - "'tcp dport { 22, 2222, 443 }' in render_nftables_conf"
+
+    - name: Confirm host Forgejo SSH passthrough files are absent
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/{{ item }}"
+      register: passthrough_files
+      loop:
+        - ../roles/platform/tasks/forgejo_ssh.yml
+        - ../roles/platform/templates/forgejo-keys.j2
+        - ../roles/platform/templates/forgejo-serv.j2
+        - ../roles/platform/templates/forgejo-ssh-exec.j2
+        - ../roles/platform/templates/forgejo-ssh-shell.j2
+        - ../roles/platform/templates/forgejo-ssh.sudoers.j2
+        - ../roles/platform/templates/sshd-forgejo-git.conf.j2
+
+    - name: Require host Forgejo SSH passthrough files to stay gone
+      ansible.builtin.assert:
+        that: not item.stat.exists
+        fail_msg: "Passthrough leftover still present: {{ item.item }}"
+      loop: "{{ passthrough_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Require loopback Packages, runner host mapping, and apex routing
+      ansible.builtin.assert:
+        that:
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__packages__ENABLED == "true"
+          - render_forgejo_compose.services.forgejo.environment.FORGEJO__actions__ENABLED == "true"
+          - ("--add-host=" ~ git_fqdn ~ ":host-gateway") in render_runner_config.container.options
+          - "'127.0.0.1:13000' in render_registries_conf"
+          - "'insecure = true' in render_registries_conf"
+          - ("server_name " ~ app_fqdn ~ " " ~ app_www_fqdn) in render_waf_conf
+          - "'proxy_pass http://127.0.0.1:43148' in render_waf_conf"
+          - "'proxy_pass http://127.0.0.1:43147' in render_waf_conf"
+          - render_scrapecast_compose.services.web.ports == ["127.0.0.1:43147:43147"]
+          - render_scrapecast_compose.services.scraper.ports == ["127.0.0.1:43148:43148"]
+          - "'127.0.0.1:13000/forgeadmin/scrapecast/web:main' in render_scrapecast_compose.services.web.image"
+          - render_scrapecast_compose.services.evasion.ports is not defined
+
+    - name: Require the WAF to deny hidden .git paths without Forgejo smart HTTP exceptions
+      ansible.builtin.assert:
+        that:
+          - '"location ~ /\\.git(?:/|$)" in render_waf_conf'
+          - '"location ~* \\.git" not in render_waf_conf'
+          - "'include /etc/nginx/fail2ban-deny.conf;' in render_waf_conf"
+          - "'./fail2ban-deny.conf:/etc/nginx/fail2ban-deny.conf:ro' in (render_waf_compose.services.waf.volumes | join(' '))"
+          - render_waf_compose.services.waf.environment.ALLOWED_REQUEST_CONTENT_TYPE is not defined
+          - >-
+            render_waf_compose.services.waf.volumes
+            | select('search', 'REQUEST-900-EXCLUSION-RULES-BEFORE-CRS')
+            | list | length == 0
+
+    - name: Read rendered fail2ban files
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/fail2ban-jail.local"
+        - "{{ render_root }}/fail2ban-forgejo.conf"
+        - "{{ render_root }}/fail2ban-nftables-waf.conf"
+        - "{{ playbook_dir }}/../roles/fail2ban/tasks/main.yml"
+        - "{{ playbook_dir }}/../site.yml"
+      register: fail2ban_render_raw
+
+    - name: Decode rendered fail2ban files
+      ansible.builtin.set_fact:
+        render_fail2ban_jail: "{{ fail2ban_render_raw.results[0].content | b64decode }}"
+        render_fail2ban_filter: "{{ fail2ban_render_raw.results[1].content | b64decode }}"
+        render_fail2ban_action: "{{ fail2ban_render_raw.results[2].content | b64decode }}"
+        fail2ban_tasks_src: "{{ fail2ban_render_raw.results[3].content | b64decode }}"
+        site_yml_src: "{{ fail2ban_render_raw.results[4].content | b64decode }}"
+
+    - name: Require fail2ban jails to use nftables-allports and the Forgejo journal
+      ansible.builtin.assert:
+        that:
+          - "'[sshd]' in render_fail2ban_jail"
+          - "'[forgejo]' in render_fail2ban_jail"
+          - "'[recidive]' in render_fail2ban_jail"
+          - "'nftables-allports' in render_fail2ban_jail"
+          - "'journalmatch = CONTAINER_NAME=forgejo' in render_fail2ban_jail"
+          - "'publicKeyHandler' in render_fail2ban_filter"
+          - "'sshConnectionFailed' in render_fail2ban_filter"
+          - "'f2b-table' not in render_nftables_conf"
+          - "'destroy table inet ansible_filter' in render_nftables_conf"
+          - "'fail2ban-deny.conf' in render_fail2ban_action"
+          - "'role: fail2ban' in site_yml_src"
+          - "'python3-systemd' in fail2ban_tasks_src"
+
+    - name: Render account-specific containers.conf
+      ansible.builtin.template:
+        src: ../roles/base/templates/containers.conf.j2
+        dest: "{{ render_root }}/containers.{{ item.key }}.conf"
+        mode: "0600"
+      loop:
+        - {key: scrapecast, value: "{{ service_accounts.scrapecast }}"}
+        - {key: edge, value: "{{ service_accounts.edge }}"}
+
+    - name: Read rendered telemetry wiring
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/host-otelcol.yml"
+        - "{{ render_root }}/traefik-static.yml"
+        - "{{ render_root }}/containers.conf"
+        - "{{ render_root }}/containers.scrapecast.conf"
+        - "{{ render_root }}/containers.edge.conf"
+        - "{{ render_root }}/traefik-compose.yml"
+      register: otel_render_raw
+
+    - name: Decode rendered telemetry wiring
+      ansible.builtin.set_fact:
+        render_host_otelcol: "{{ otel_render_raw.results[0].content | b64decode | from_yaml }}"
+        render_traefik_static: "{{ otel_render_raw.results[1].content | b64decode | from_yaml }}"
+        render_containers_conf: "{{ otel_render_raw.results[2].content | b64decode }}"
+        render_scrapecast_containers_conf: "{{ otel_render_raw.results[3].content | b64decode }}"
+        render_edge_containers_conf: "{{ otel_render_raw.results[4].content | b64decode }}"
+        render_traefik_compose: "{{ otel_render_raw.results[5].content | b64decode | from_yaml }}"
+
+    - name: Read the rendered SigNoz casting
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/signoz-casting.yml"
+      register: signoz_casting_raw
+
+    - name: Decode the rendered SigNoz casting
+      ansible.builtin.set_fact:
+        render_signoz_casting: "{{ signoz_casting_raw.content | b64decode | from_yaml }}"
+
+    - name: Require a single ClickHouse, a memory cap, and a named loopback ingester
+      ansible.builtin.assert:
+        that:
+          - render_signoz_casting.spec.ingester.spec.image == 'docker.io/signoz/signoz-otel-collector:v0.144.9'
+          - render_signoz_casting.spec.telemetrystore.spec.cluster.replicas == 0
+          - render_signoz_casting.spec.telemetrystore.spec.cluster.shards == 1
+          - render_signoz_casting.spec.patches[0].operations | selectattr('path', 'equalto', '/services/ingester/container_name') | map(attribute='value') | first == 'signoz-ingester'
+          - render_signoz_casting.spec.patches[0].operations | selectattr('path', 'equalto', '/services/ingester/depends_on') | list | length == 0
+          - >-
+            render_signoz_casting.spec.patches[0].operations
+            | selectattr('path', 'equalto', '/services/signoz-telemetrystore-clickhouse-0-0/depends_on')
+            | map(attribute='value') | first
+            == {
+              'signoz-telemetrykeeper-clickhousekeeper-0': {'condition': 'service_started'},
+              'signoz-telemetrystore-clickhouse-user-scripts': {'condition': 'service_started'}
+            }
+          - render_signoz_casting.spec.patches[0].operations | selectattr('op', 'equalto', 'remove') | map(attribute='path') | list | intersect(['/services/ingester/deploy']) | length == 1
+          - render_signoz_casting.spec.patches[0].operations | selectattr('path', 'equalto', '/services/signoz-telemetrystore-clickhouse-0-0/mem_limit') | map(attribute='value') | first == '2g'
+          - render_signoz_casting.spec.patches[1].target == 'deployment/telemetrystore/clickhouse/config-0-0.yaml'
+          - render_signoz_casting.spec.patches[1].operations | selectattr('path', 'equalto', '/max_server_memory_usage') | map(attribute='value') | first == 1610612736
+          - render_signoz_casting.spec.patches[1].operations | selectattr('path', 'equalto', '/background_pool_size') | map(attribute='value') | first == 2
+          - >-
+            render_signoz_casting.spec.patches[1].operations
+            | selectattr('path', 'equalto', '/merge_tree')
+            | map(attribute='value') | first
+            == {
+              'number_of_free_entries_in_pool_to_execute_mutation': 1,
+              'number_of_free_entries_in_pool_to_lower_max_size_of_merge': 1,
+              'number_of_free_entries_in_pool_to_execute_optimize_entire_partition': 1
+            }
+
+    - name: Require app OTLP to go through the host collector
+      ansible.builtin.assert:
+        that:
+          - render_host_otelcol.receivers.otlp.protocols.grpc.endpoint == "127.0.0.1:4317"
+          - render_host_otelcol.receivers.otlp.protocols.http.endpoint == "127.0.0.1:4318"
+          - render_host_otelcol.receivers.nginx.endpoint == "http://127.0.0.1:18091/nginx_status"
+          - "'otlp' in render_host_otelcol.service.pipelines.metrics.receivers"
+          - "'nginx' in render_host_otelcol.service.pipelines.metrics.receivers"
+          - "'otlp' in render_host_otelcol.service.pipelines.traces.receivers"
+          - "'otlp' in render_host_otelcol.service.pipelines.logs.receivers"
+          - render_traefik_static.entryPoints.websecure.observability.tracing | bool
+          - render_traefik_static.entryPoints.websecure.observability.metrics | bool
+          - render_traefik_static.entryPoints.websecure.observability.accessLogs | bool
+          - render_traefik_static.experimental.otlpLogs | bool
+          - render_traefik_static.log.otlp.http.endpoint == "http://127.0.0.1:4318/v1/logs"
+          - render_traefik_static.accessLog.otlp.serviceName == "traefik"
+          - render_traefik_static.accessLog.otlp.http.endpoint == "http://127.0.0.1:4318/v1/logs"
+          - render_traefik_static.accessLog.dualOutput | bool
+          - render_traefik_static.metrics.otlp.grpc.endpoint == "127.0.0.1:4317"
+          - render_traefik_static.metrics.otlp.grpc.insecure | bool
+          - render_traefik_static.metrics.otlp.http is not defined
+          - render_traefik_static.tracing.otlp.grpc.endpoint == "127.0.0.1:4317"
+          - render_traefik_static.tracing.otlp.grpc.insecure | bool
+          - render_traefik_static.tracing.otlp.http is not defined
+          - render_traefik_static.metrics.otlp.addInternals is not defined
+          - render_traefik_static.tracing.addInternals is not defined
+          - "'host.containers.internal' not in render_traefik_static.log.otlp.http.endpoint"
+          - "'169.254.1.3' not in render_traefik_static.log.otlp.http.endpoint"
+          - "'14318' not in render_traefik_static.log.otlp.http.endpoint"
+          - render_traefik_compose.services.traefik.extra_hosts is not defined
+          - render_waf_compose.services.waf.environment.WAF_STATUS_PORT == "18091"
+          - '"listen 127.0.0.1:${WAF_STATUS_PORT}" in render_waf_conf'
+          - '"stub_status" in render_waf_conf'
+          - render_scrapecast_compose.services.web.extra_hosts == ["host.containers.internal:169.254.1.3"]
+          - render_scrapecast_compose.services.web.environment.OTEL_EXPORTER_OTLP_ENDPOINT == "http://host.containers.internal:4318"
+          - render_scrapecast_compose.services.scraper.environment.OTEL_EXPORTER_OTLP_ENDPOINT == "http://host.containers.internal:4318"
+          - render_scrapecast_compose.services.evasion.environment.OTEL_EXPORTER_OTLP_ENDPOINT == "http://host.containers.internal:4318"
+          - "'map-host-loopback' not in render_containers_conf"
+          - "'--map-host-loopback' in render_scrapecast_containers_conf"
+          - "'169.254.1.3' in render_scrapecast_containers_conf"
+          - "'--map-host-loopback' in render_edge_containers_conf"
+          - "'169.254.1.3' in render_edge_containers_conf"
+
+    - name: Render a rootless Compose wrapper
+      ansible.builtin.template:
+        src: ../roles/platform/templates/rootless-compose.service.j2
+        dest: "{{ render_root }}/{{ item.name }}.service"
+        mode: "0600"
+      loop: "{{ platform_rootless_stack_units }}"
+
+    - name: Render per-account telemetry templates
+      ansible.builtin.template:
+        src: "{{ render_pair.0 }}"
+        dest: >-
+          {{ render_root }}/{{ render_pair.1.value.name }}-{{ render_pair.0 | basename | regex_replace('\.j2$', '') }}
+        mode: "0600"
+      loop: >-
+        {{
+          [
+            '../roles/telemetry/templates/podman-otelcol.yml.j2',
+            '../roles/telemetry/templates/otelcol-podman.service.j2'
+          ]
+          | product(service_accounts | dict2items)
+          | list
+        }}
+      loop_control:
+        loop_var: render_pair
+      vars:
+        item: "{{ render_pair.1 }}"
+
+    - name: Render a YAF interface unit
+      ansible.builtin.template:
+        src: ../roles/sensors/templates/yaf-interface.service.j2
+        dest: "{{ render_root }}/yaf-{{ sensor_item }}.service"
+        mode: "0600"
+      loop: "{{ sensor_interfaces | unique }}"
+      loop_control:
+        loop_var: sensor_item
+      vars:
+        item: "{{ sensor_item }}"
+
+    - name: Read rendered boot-order units
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/secure-edge.service"
+        - "{{ render_root }}/svc-edge-otelcol-podman.service"
+        - "{{ playbook_dir }}/../roles/platform/tasks/main.yml"
+        - "{{ render_root }}/secure-signoz.service"
+      register: boot_order_raw
+
+    - name: Decode rendered boot-order units
+      ansible.builtin.set_fact:
+        render_edge_unit: "{{ boot_order_raw.results[0].content | b64decode }}"
+        render_edge_otelcol_unit: "{{ boot_order_raw.results[1].content | b64decode }}"
+        platform_tasks_src: "{{ boot_order_raw.results[2].content | b64decode }}"
+        render_signoz_unit: "{{ boot_order_raw.results[3].content | b64decode }}"
+
+    - name: Require Traefik and Podman collectors not to wait on SigNoz
+      ansible.builtin.assert:
+        that:
+          - "'After=network-online.target user@2100.service' in render_edge_unit"
+          - "'secure-signoz.service' not in render_edge_unit"
+          - "'secure-waf.service' not in render_edge_unit"
+          - "'After=network-online.target user@2100.service' in render_edge_otelcol_unit"
+          - "'secure-signoz.service' not in render_edge_otelcol_unit"
+          - "'after: \"network-online.target\"' in platform_tasks_src"
+          - "'Stop podman-compose from blocking boot on healthchecks' in platform_tasks_src"
+          - "'service_healthy' in platform_tasks_src"
+          - "'service_started' in platform_tasks_src"
+          - "'Enable SigNoz on boot' in platform_tasks_src"
+          - "'signoz-telemetrystore-migrator' in platform_tasks_src"
+          - "'Start existing SigNoz containers' in platform_tasks_src"
+          - "'--no-start' in render_signoz_unit"
+          - "'--no-deps' in render_signoz_unit"
+          - "'podman start --all' in render_signoz_unit"
+          - "'--no-start' not in render_edge_unit"
+          - "'orphansExecReload' not in render_edge_unit"
+          - "'orphansExecReload' not in render_signoz_unit"
+          - (render_edge_unit.splitlines() | select('match', '^ExecStart=') | list | length) == 1
+          - (render_edge_unit.splitlines() | select('match', '^ExecReload=') | list | length) == 1
+          - (render_signoz_unit.splitlines() | select('match', '^ExecStart=') | list | length) == 2
+          - (render_signoz_unit.splitlines() | select('match', '^ExecReload=') | list | length) == 2
+
+    - name: Read rendered Wazuh Compose and agent tasks
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/wazuh-compose.yml"
+        - "{{ playbook_dir }}/../roles/wazuh_agent/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/platform/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/wazuh_agent/templates/localfiles.xml.j2"
+      register: wazuh_render_raw
+
+    - name: Decode rendered Wazuh Compose
+      ansible.builtin.set_fact:
+        render_wazuh_compose: "{{ wazuh_render_raw.results[0].content | b64decode | from_yaml }}"
+        wazuh_agent_tasks_src: "{{ wazuh_render_raw.results[1].content | b64decode }}"
+        platform_wazuh_tasks_src: "{{ wazuh_render_raw.results[2].content | b64decode }}"
+        wazuh_agent_localfiles_src: "{{ wazuh_render_raw.results[3].content | b64decode }}"
+
+    - name: Require Wazuh 5.0.0-beta5 on loopback with 5.x paths
+      ansible.builtin.assert:
+        that:
+          - render_wazuh_compose.services['wazuh.manager'].image == 'docker.io/wazuh/wazuh-manager:5.0.0-beta5'
+          - render_wazuh_compose.services['wazuh.indexer'].image == 'docker.io/wazuh/wazuh-indexer:5.0.0-beta5'
+          - render_wazuh_compose.services['wazuh.dashboard'].image == 'docker.io/wazuh/wazuh-dashboard:5.0.0-beta5'
+          - "'/var/wazuh-manager/etc' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'/var/ossec' not in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'127.0.0.1:1514:1514' in render_wazuh_compose.services['wazuh.manager'].ports"
+          - "'127.0.0.1:1517:1517' in render_wazuh_compose.services['wazuh.manager'].ports"
+          - "'127.0.0.1:15601:5601' in render_wazuh_compose.services['wazuh.dashboard'].ports"
+          - render_wazuh_compose.services['wazuh.indexer'].ports is not defined
+          - "'service_healthy' not in (wazuh_render_raw.results[0].content | b64decode)"
+          - "'wazuh_agent_apt_repo' in wazuh_agent_tasks_src"
+          - "'wazuh_agent_package_version' in wazuh_agent_tasks_src"
+          - "'127.0.0.1' in wazuh_agent_tasks_src"
+          - "'client.keys' in wazuh_agent_tasks_src"
+          - "'authd.pass' in wazuh_agent_tasks_src"
+          - "'enrollment' in wazuh_agent_tasks_src"
+          - "'/var/ossec' in wazuh_agent_tasks_src"
+          - "'ExecStart' in wazuh_agent_tasks_src"
+          - "'group: wazuh' in wazuh_agent_tasks_src"
+          - "'systemd-journal' in wazuh_agent_tasks_src"
+          - "'trivy-readers' in wazuh_agent_tasks_src"
+          - "'journald' in wazuh_agent_localfiles_src"
+          - "'/var/log/fail2ban.log' in wazuh_agent_localfiles_src"
+          - "'/var/log/suricata/*/eve.json' in wazuh_agent_localfiles_src"
+          - "'/var/log/zeek/*/current/*.log' in wazuh_agent_localfiles_src"
+          - "'/etc/ssh' in wazuh_agent_tasks_src"
+          - "'pre-release/5.x/apt/' in wazuh_agent_apt_repo"
+          - "'wazuh-certs.sh' in platform_wazuh_tasks_src"
+          - "'generate-indexer-certs' not in platform_wazuh_tasks_src"
+          - "'config/root-ca/certs/root-ca.pem' in platform_wazuh_tasks_src"
+          - "'/wazuh-config-mount/etc/certs/' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'/var/wazuh-manager/etc/certs/' not in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'wazuh-dashboard-config' not in (render_wazuh_compose.services['wazuh.dashboard'].volumes | join(' '))"
+          - "'platform_wazuh_volumes' in platform_wazuh_tasks_src"
+          - "'.wazuh5-seeded' in platform_wazuh_tasks_src"
+          - "'platform_wazuh_pems' in platform_wazuh_tasks_src"
+          - "'Let the indexer UID read Wazuh PEMs' in platform_wazuh_tasks_src"
+          - "'import_tasks: wazuh_api.yml' in platform_wazuh_tasks_src"
+          - "'import_tasks: wazuh_indexer.yml' in platform_wazuh_tasks_src"
+          - "'manager.pem' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'1517' in wazuh_agent_tasks_src"
+          - render_wazuh_compose.services['wazuh.manager'].environment.API_PASSWORD is not defined
+          - render_wazuh_compose.services['wazuh.dashboard'].environment.API_PASSWORD is defined
+
+    - name: Read rendered per-account Trivy units
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/trivy-scan-{{ item.value.name }}.service"
+      loop: "{{ service_accounts | dict2items }}"
+      register: trivy_service_raw
+
+    - name: Read rendered per-account Trivy timers
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/trivy-scan-{{ item.value.name }}.timer"
+      loop: "{{ service_accounts | dict2items }}"
+      register: trivy_timer_raw
+
+    - name: Read Trivy integration sources
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/trivy-platform-scan"
+        - "{{ render_root }}/trivy-rules.xml"
+        - "{{ playbook_dir }}/../roles/trivy/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/wazuh_agent/templates/localfiles.xml.j2"
+        - "{{ playbook_dir }}/../examples/forgejo-workflow.yml"
+        - "{{ playbook_dir }}/../site.yml"
+      register: trivy_sources_raw
+
+    - name: Decode Trivy integration sources
+      ansible.builtin.set_fact:
+        render_trivy_scanner: "{{ trivy_sources_raw.results[0].content | b64decode }}"
+        render_trivy_rules: "{{ trivy_sources_raw.results[1].content | b64decode }}"
+        trivy_tasks_src: "{{ trivy_sources_raw.results[2].content | b64decode }}"
+        trivy_localfiles_src: "{{ trivy_sources_raw.results[3].content | b64decode }}"
+        trivy_workflow_src: "{{ trivy_sources_raw.results[4].content | b64decode }}"
+        trivy_site_src: "{{ trivy_sources_raw.results[5].content | b64decode }}"
+
+    - name: Require each Trivy service to stay in its rootless account
+      ansible.builtin.assert:
+        that:
+          - "'User=' ~ item.value.name in trivy_rendered_service"
+          - "'Group=' ~ item.value.name in trivy_rendered_service"
+          - "'HOME=/var/lib/' ~ item.value.name in trivy_rendered_service"
+          - "'XDG_RUNTIME_DIR=/run/user/' ~ (item.value.uid | string) in trivy_rendered_service"
+          - "'/run/user/' ~ (item.value.uid | string) ~ '/podman/podman.sock' in trivy_rendered_service"
+          - "'/var/log/trivy/' ~ item.value.name in trivy_rendered_service"
+          - "'NoNewPrivileges=true' in trivy_rendered_service"
+      vars:
+        trivy_rendered_service: "{{ trivy_service_raw.results[trivy_test_index].content | b64decode }}"
+      loop: "{{ service_accounts | dict2items }}"
+      loop_control:
+        index_var: trivy_test_index
+        label: "{{ item.value.name }}"
+
+    - name: Require each Trivy timer to be persistent and randomized
+      ansible.builtin.assert:
+        that:
+          - "'Persistent=true' in trivy_rendered_timer"
+          - "'RandomizedDelaySec=' ~ (trivy_scan_randomized_delay_seconds | string) in trivy_rendered_timer"
+          - "'Unit=trivy-scan-' ~ item.value.name ~ '.service' in trivy_rendered_timer"
+      vars:
+        trivy_rendered_timer: "{{ trivy_timer_raw.results[trivy_test_index].content | b64decode }}"
+      loop: "{{ service_accounts | dict2items }}"
+      loop_control:
+        index_var: trivy_test_index
+        label: "{{ item.value.name }}"
+
+    - name: Validate the rendered Trivy scanner syntax
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - "compile(open('{{ render_root }}/trivy-platform-scan').read(), 'trivy-platform-scan', 'exec')"
+      changed_when: false
+
+    - name: Normalize a fixture Trivy report
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ render_root }}/trivy-platform-scan"
+          - --account
+          - fixture
+          - --normalize-report
+          - "{{ playbook_dir }}/fixtures/trivy-report.json"
+      register: trivy_fixture_normalized
+      changed_when: false
+
+    - name: Test Trivy normalization and finding transitions
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/test_trivy_scanner.py"
+          - "{{ render_root }}/trivy-platform-scan"
+          - "{{ playbook_dir }}/fixtures/trivy-report.json"
+      changed_when: false
+
+    - name: Validate the rendered Wazuh Trivy rules
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - "import xml.etree.ElementTree as ET; ET.parse('{{ render_root }}/trivy-rules.xml')"
+      changed_when: false
+
+    - name: Require complete Trivy host, Wazuh, and CI wiring
+      ansible.builtin.assert:
+        that:
+          - trivy_fixture_normalized.stdout_lines | length == 1
+          - (trivy_fixture_normalized.stdout_lines[0] | from_json).finding_id == 'CVE-2099-0001'
+          - (trivy_fixture_normalized.stdout_lines[0] | from_json).severity == 'HIGH'
+          - "'service_accounts | dict2items' in trivy_tasks_src"
+          - "'artifact_checksums.trivy' in trivy_tasks_src"
+          - "'trivy-scan-' in trivy_tasks_src"
+          - "'/var/log/trivy/*/events.ndjson' in trivy_localfiles_src"
+          - "'<decoded_as>json</decoded_as>' in render_trivy_rules"
+          - "'<field name=\"integration\">^trivy$</field>' in render_trivy_rules"
+          - "'--ignore-unfixed' in trivy_workflow_src"
+          - "'--severity HIGH,CRITICAL' in trivy_workflow_src"
+          - "'--exit-code 1' in trivy_workflow_src"
+          - "'actions/upload-artifact@v4' in trivy_workflow_src"
+          - "'if: always()' in trivy_workflow_src"
+          - "'role: trivy' in trivy_site_src"
+          - "'/wazuh-config-mount/etc/rules:ro' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+
+    - name: Read the base role sysctl tasks
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../roles/base/tasks/main.yml"
+      register: base_tasks_raw
+
+    - name: Require privileged-port sysctl to persist in sysctl.d
+      ansible.builtin.assert:
+        that:
+          - "'/etc/sysctl.d/90-secure-platform.conf' in (base_tasks_raw.content | b64decode)"
+          - "'/etc/sysctl.d/99-sysctl.conf' in (base_tasks_raw.content | b64decode)"
+          - "'ip_unprivileged_port_start' in (base_tasks_raw.content | b64decode)"

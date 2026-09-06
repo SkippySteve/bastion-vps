@@ -1,0 +1,10 @@
+# Managed by Ansible. Skip publicKeyHandler lines; those fire before the
+# client finishes the SSH handshake.
+[Definition]
+failregex = ^.*sshConnectionFailed\(\).*Failed authentication attempt from <HOST>
+            ^.*Failed authentication attempt for .+ from <HOST>
+            ^.*invalid credentials from <HOST>
+            ^.*Attempted access of unknown user.* from <HOST>
+ignoreregex = ^.*publicKeyHandler\(\)
+datepattern = {^LN-BEG}%%Y/%%m/%%d %%H:%%M:%%S
+              {^LN-BEG}

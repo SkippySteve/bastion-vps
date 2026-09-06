@@ -1,0 +1,116 @@
+---
+- name: Download the pinned Forgejo Runner binary
+  ansible.builtin.get_url:
+    url: >-
+      https://code.forgejo.org/forgejo/runner/releases/download/v{{ forgejo_runner_version
+      }}/forgejo-runner-{{ forgejo_runner_version }}-linux-{{ preflight_platform_arch }}
+    dest: "/usr/local/bin/forgejo-runner-{{ forgejo_runner_version }}"
+    checksum: "sha256:{{ artifact_checksums.forgejo_runner[preflight_platform_arch] }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Link the active Forgejo Runner version
+  ansible.builtin.file:
+    src: "/usr/local/bin/forgejo-runner-{{ forgejo_runner_version }}"
+    dest: /usr/local/bin/forgejo-runner
+    state: link
+    force: true
+
+- name: Create the isolated runner state directory
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.runner.name }}/runner"
+    state: directory
+    owner: "{{ service_accounts.runner.name }}"
+    group: "{{ service_accounts.runner.name }}"
+    mode: "0700"
+
+- name: Render the unprivileged runner configuration
+  ansible.builtin.template:
+    src: runner-config.yml.j2
+    dest: "/var/lib/{{ service_accounts.runner.name }}/runner/config.yml"
+    owner: "{{ service_accounts.runner.name }}"
+    group: "{{ service_accounts.runner.name }}"
+    mode: "0600"
+  notify: Restart Forgejo Runner
+
+- name: Check whether the runner is registered
+  ansible.builtin.stat:
+    path: "/var/lib/{{ service_accounts.runner.name }}/runner/.runner"
+  register: runner_registration
+
+- name: Wait for Forgejo on loopback before registration
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ forgejo_http_port }}"
+    timeout: 120
+  when:
+    - forgejo_runner_registration_token | length > 0
+    - not runner_registration.stat.exists
+
+- name: Register the runner without Docker-in-Docker
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/timeout
+      - --signal=TERM
+      - --kill-after=10
+      - "60"
+      - /usr/local/bin/forgejo-runner
+      - register
+      - --no-interactive
+      - --instance
+      - "{{ forgejo_runner_instance_url }}"
+      - --token
+      - "{{ forgejo_runner_registration_token }}"
+      - --name
+      - "{{ platform_hostname }}-rootless"
+      - --labels
+      - "{{ forgejo_runner_labels }}"
+  args:
+    chdir: "/var/lib/{{ service_accounts.runner.name }}/runner"
+  become: true
+  become_user: "{{ service_accounts.runner.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.runner.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.runner.uid }}"
+  when:
+    - forgejo_runner_registration_token | length > 0
+    - not runner_registration.stat.exists
+  register: runner_register_cmd
+  changed_when: runner_register_cmd.rc == 0
+  failed_when: runner_register_cmd.rc != 0
+  no_log: true
+
+- name: Recheck runner registration
+  ansible.builtin.stat:
+    path: "/var/lib/{{ service_accounts.runner.name }}/runner/.runner"
+  register: runner_registration_final
+
+- name: Install the Forgejo Runner service
+  ansible.builtin.template:
+    src: forgejo-runner.service.j2
+    dest: /etc/systemd/system/forgejo-runner.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload runner unit
+    - Restart Forgejo Runner
+
+- name: Apply runner unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the registered Forgejo Runner
+  ansible.builtin.systemd_service:
+    name: forgejo-runner.service
+    enabled: true
+    state: started
+  when: runner_registration_final.stat.exists
+
+- name: Explain deferred runner registration
+  ansible.builtin.debug:
+    msg: >-
+      Forgejo is ready, but the runner was not registered because
+      forgejo_runner_registration_token is empty. Create a runner token in
+      Forgejo, add it to the encrypted variables, and rerun with --tags runner.
+  when: not runner_registration_final.stat.exists

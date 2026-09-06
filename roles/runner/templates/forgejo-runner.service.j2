@@ -1,0 +1,34 @@
+[Unit]
+Description=Forgejo Actions runner using rootless Podman (no DinD)
+After=network-online.target secure-forgejo.service user@{{ service_accounts.runner.uid }}.service
+Wants=network-online.target
+Requires=secure-forgejo.service user@{{ service_accounts.runner.uid }}.service
+ConditionPathExists=/var/lib/{{ service_accounts.runner.name }}/runner/.runner
+
+[Service]
+Type=simple
+User={{ service_accounts.runner.name }}
+Group={{ service_accounts.runner.name }}
+WorkingDirectory=/var/lib/{{ service_accounts.runner.name }}/runner
+Environment=HOME=/var/lib/{{ service_accounts.runner.name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.runner.uid }}
+Environment=DOCKER_HOST=unix:///run/user/{{ service_accounts.runner.uid }}/podman/podman.sock
+Environment=CONTAINER_HOST=unix:///run/user/{{ service_accounts.runner.uid }}/podman/podman.sock
+ExecStart=/usr/local/bin/forgejo-runner daemon --config /var/lib/{{ service_accounts.runner.name }}/runner/config.yml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/{{ service_accounts.runner.name }} /run/user/{{ service_accounts.runner.uid }}
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

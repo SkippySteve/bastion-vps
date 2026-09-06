@@ -1,0 +1,32 @@
+---
+log:
+  level: info
+
+runner:
+  file: .runner
+  capacity: 1
+  timeout: 3h
+  shutdown_timeout: 30s
+  fetch_timeout: 10s
+  fetch_interval: 2s
+  envs:
+    FORGEJO_ACTIONS: "true"
+
+cache:
+  enabled: true
+  dir: /var/lib/{{ service_accounts.runner.name }}/runner/cache
+
+container:
+  network: bridge
+  privileged: false
+  # Job clone URLs use ROOT_URL (https://git.<domain>/). Point that name at
+  # the host so the container does not hairpin through the public address.
+  options: "--add-host={{ git_fqdn }}:host-gateway"
+  # The daemon uses DOCKER_HOST, but this setting prevents the runner from
+  # mounting that socket into ordinary job containers.
+  docker_host: "-"
+  force_pull: true
+  valid_volumes: []
+
+host:
+  workdir_parent: /var/lib/{{ service_accounts.runner.name }}/runner/work

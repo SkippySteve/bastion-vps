@@ -1,0 +1,7 @@
+---
+all:
+  children:
+    secure_vps:
+      hosts:
+        syntax-check-host:
+          ansible_connection: local

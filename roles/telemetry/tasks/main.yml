@@ -1,0 +1,81 @@
+---
+- name: Download the pinned OpenTelemetry Collector Contrib package
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otelcol_version
+      }}/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb
+    dest: "/usr/local/src/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb"
+    checksum: "sha256:{{ artifact_checksums.otelcol_deb[preflight_platform_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install OpenTelemetry Collector Contrib
+  ansible.builtin.apt:
+    deb: "/usr/local/src/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb"
+    state: present
+
+- name: Grant the host collector read-only journal access
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups: systemd-journal
+    append: true
+
+- name: Create durable host collector cursor storage
+  ansible.builtin.file:
+    path: /var/lib/otelcol-contrib/storage
+    state: directory
+    owner: otelcol-contrib
+    group: otelcol-contrib
+    mode: "0750"
+
+- name: Configure host OTLP ingest, metrics, journal, security logs, and Prometheus scraping
+  ansible.builtin.template:
+    src: host-otelcol.yml.j2
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  notify: Restart host OpenTelemetry collector
+
+- name: Configure a least-privilege Podman stats collector for each account
+  ansible.builtin.template:
+    src: podman-otelcol.yml.j2
+    dest: "/var/lib/{{ item.value.name }}/.config/otelcol-podman.yml"
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0600"
+  loop: "{{ service_accounts | dict2items }}"
+  notify: Restart Podman OpenTelemetry collectors
+
+- name: Install per-account Podman stats collector units
+  ansible.builtin.template:
+    src: otelcol-podman.service.j2
+    dest: "/etc/systemd/system/otelcol-podman-{{ item.value.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+  notify:
+    - Reload systemd for telemetry
+    - Restart Podman OpenTelemetry collectors
+
+- name: Validate the host collector configuration
+  ansible.builtin.command: /usr/bin/otelcol-contrib validate --config=/etc/otelcol-contrib/config.yaml
+  changed_when: false
+
+- name: Apply telemetry unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the host OpenTelemetry collector
+  ansible.builtin.systemd_service:
+    name: otelcol-contrib.service
+    enabled: true
+    state: started
+
+- name: Enable per-account Podman stats collectors
+  ansible.builtin.systemd_service:
+    name: "otelcol-podman-{{ item.value.name }}.service"
+    enabled: true
+    state: started
+  loop: "{{ service_accounts | dict2items }}"

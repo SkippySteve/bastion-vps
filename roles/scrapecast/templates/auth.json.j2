@@ -1,0 +1,7 @@
+{
+  "auths": {
+    "127.0.0.1:{{ forgejo_http_port }}": {
+      "auth": "{{ (forgejo_admin_user ~ ':' ~ scrapecast_registry_pull_token) | b64encode }}"
+    }
+  }
+}

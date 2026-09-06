@@ -1,0 +1,30 @@
+[Unit]
+Description=SiLK IPFIX collector and flow packer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silk
+Group=silk
+Environment=SILK_PATH=/opt/netsa
+Environment=SILK_CONFIG_FILE=/etc/silk/silk.conf
+Environment=SILK_DATA_ROOTDIR=/var/lib/silk/data
+ExecStart=/opt/netsa/sbin/rwflowpack --no-daemon --sensor-configuration=/etc/silk/sensors.conf --site-config-file=/etc/silk/silk.conf --output-mode=local-storage --root-directory=/var/lib/silk/data --log-destination=/var/log/silk/rwflowpack.log
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/silk/data /var/log/silk
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

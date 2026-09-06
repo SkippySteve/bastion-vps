@@ -1,0 +1,55 @@
+---
+- name: Install fail2ban and the systemd journal backend
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    state: present
+    name:
+      - fail2ban
+      - python3-systemd
+
+- name: Create an empty WAF fail2ban deny list
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/fail2ban-deny.conf"
+    content: |
+      # Managed by fail2ban. Empty until an address is banned.
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+    force: false
+
+- name: Install the platform fail2ban jail
+  ansible.builtin.template:
+    src: jail.d/platform.local.j2
+    dest: /etc/fail2ban/jail.d/platform.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload fail2ban
+
+- name: Install the Forgejo fail2ban filter
+  ansible.builtin.template:
+    src: filter.d/forgejo.conf.j2
+    dest: /etc/fail2ban/filter.d/forgejo.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload fail2ban
+
+- name: Install the WAF deny action
+  ansible.builtin.template:
+    src: action.d/nftables-waf.conf.j2
+    dest: /etc/fail2ban/action.d/nftables-waf.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload fail2ban
+
+- name: Enable fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban.service
+    enabled: true
+    state: started
+
+- name: Apply fail2ban configuration
+  ansible.builtin.meta: flush_handlers

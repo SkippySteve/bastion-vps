@@ -1,0 +1,46 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart SSH
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: restarted
+
+- name: Restart secure edge
+  ansible.builtin.systemd_service:
+    name: secure-edge.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure WAF
+  ansible.builtin.systemd_service:
+    name: secure-waf.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure Authentik
+  ansible.builtin.systemd_service:
+    name: secure-auth.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure Forgejo
+  ansible.builtin.systemd_service:
+    name: secure-forgejo.service
+    state: restarted
+  failed_when: false
+
+- name: Restart secure SigNoz
+  ansible.builtin.systemd_service:
+    name: secure-signoz.service
+    state: restarted
+    no_block: true
+  failed_when: false
+
+- name: Restart secure Wazuh
+  ansible.builtin.systemd_service:
+    name: secure-wazuh.service
+    state: restarted
+  failed_when: false

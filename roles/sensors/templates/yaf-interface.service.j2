@@ -1,0 +1,30 @@
+[Unit]
+Description=YAF flow sensor on {{ item }}
+After=network-online.target silk-rwflowpack.service
+Wants=network-online.target
+Requires=silk-rwflowpack.service
+
+[Service]
+Type=simple
+User=yaf
+Group=yaf
+Environment=LD_LIBRARY_PATH=/opt/netsa/lib:/opt/netsa/lib64
+ExecStart=/opt/netsa/bin/yaf --live=pcap --in={{ item }} --out=127.0.0.1 --ipfix=tcp --ipfix-port={{ silk_ipfix_base_port + (sensor_interfaces | unique | list).index(item) }} --silk --applabel --max-payload=512 --stats=300 --filter="not (host 127.0.0.1 and tcp portrange {{ silk_ipfix_base_port }}-{{ silk_ipfix_base_port + (sensor_interfaces | unique | list | length) - 1 }})" --log=stderr
+Restart=on-failure
+RestartSec=5s
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET
+
+[Install]
+WantedBy=multi-user.target

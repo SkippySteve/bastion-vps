@@ -1,0 +1,227 @@
+---
+# Identity and exposure
+platform_hostname: secure-vps
+admin_user: ops
+admin_authorized_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICtRAdGQ5ojr8DgH7n4VUTn9PBvqCEifjvfMObsDsA93 steve2@SteveDesktop"]
+admin_uid: 2000
+
+# The first run deliberately leaves the existing firewall untouched. Set this
+# true only after proving that SSH on 22 and HTTPS on 443 both work.
+firewall_lockdown_confirm: false
+ssh_port: 22
+public_port: 443
+forgejo_ssh_port: 2222
+fail2ban_ignoreip: []
+fail2ban_bantime: 1h
+fail2ban_findtime: 10m
+fail2ban_sshd_maxretry: 5
+fail2ban_forgejo_maxretry: 10
+fail2ban_forgejo_findtime: 1h
+fail2ban_recidive_bantime: 1w
+fail2ban_recidive_findtime: 1d
+fail2ban_recidive_maxretry: 5
+
+base_domain: aimingupward.com
+auth_fqdn: "auth.{{ base_domain }}"
+git_fqdn: "git.{{ base_domain }}"
+observe_fqdn: "observe.{{ base_domain }}"
+security_fqdn: "security.{{ base_domain }}"
+traefik_fqdn: "edge.{{ base_domain }}"
+app_fqdn: "{{ base_domain }}"
+app_www_fqdn: "www.{{ base_domain }}"
+
+# Optional Cloudflare A records. Off by default. When true, the dns role
+# upserts DNS-only A records (Cloudflare HTTP proxy off) for the names
+# below. A scoped API token with Zone.DNS Edit and Zone.Zone Read, or a
+# Global API Key plus account email, goes in the vault. .local names are
+# rejected. Private IPv4 targets are allowed when ACME uses DNS-01 or the
+# file CA; TLS-ALPN still requires a publicly reachable address.
+cloudflare_dns_enabled: false
+cloudflare_zone: "{{ base_domain }}"
+cloudflare_dns_names:
+  - "{{ auth_fqdn }}"
+  - "{{ git_fqdn }}"
+  - "{{ observe_fqdn }}"
+  - "{{ security_fqdn }}"
+  - "{{ traefik_fqdn }}"
+  - "{{ app_fqdn }}"
+  - "{{ app_www_fqdn }}"
+# Leave empty to use ansible_default_ipv4.address.
+cloudflare_record_ipv4: ""
+
+# Certificate issuance. A .local base_domain uses a file CA
+# (tls/lab-ca.pem on the controller). Any other domain uses Let's Encrypt.
+#   tls  TLS-ALPN-01. Let's Encrypt connects to this host on TCP/443.
+#        Use this on a public VPS.
+#   dns  DNS-01 via Cloudflare. Let's Encrypt never connects to the host.
+#        Use this on Vagrant, a home lab, or any private IP. Traefik on
+#        svc-edge receives the Cloudflare credential.
+traefik_acme_enabled: "{{ not base_domain.endswith('.local') }}"
+traefik_acme_challenge: tls
+# Uncomment to issue from Let's Encrypt staging (untrusted certs, no
+# production rate limits) while you iterate:
+# traefik_acme_ca_server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Flip this after Authentik proxy providers exist and are bound to the
+# embedded outpost. Traefik then replaces bootstrap Basic Auth with forward
+# auth and publishes the dashboard at https://{{ traefik_fqdn }}/dashboard/.
+protect_admin_apps_with_authentik: true
+
+# Realistic floor for this intentionally heavy, single-node design.
+minimum_vcpus: 8
+minimum_memory_mb: 20000
+minimum_root_disk_gb: 200
+allow_undersized_host: true
+
+# Rootless accounts are the host isolation boundary. Multi-container vendor
+# stacks share one account because their supported design requires shared
+# private networks and volumes.
+service_accounts:
+  edge: {name: svc-edge, uid: 2100, subid_start: 1000000}
+  waf: {name: svc-waf, uid: 2101, subid_start: 1065536}
+  auth: {name: svc-auth, uid: 2102, subid_start: 1131072}
+  forgejo: {name: svc-forgejo, uid: 2103, subid_start: 1196608}
+  signoz: {name: svc-signoz, uid: 2104, subid_start: 1262144}
+  wazuh: {name: svc-wazuh, uid: 2105, subid_start: 1327680}
+  runner: {name: svc-runner, uid: 2106, subid_start: 1393216}
+  scrapecast: {name: svc-scrapecast, uid: 2107, subid_start: 1458752}
+subid_count: 65536
+wazuh_stack_fim_paths:
+  - "/var/lib/{{ service_accounts.edge.name }}/stacks"
+  - "/var/lib/{{ service_accounts.waf.name }}/stacks"
+  - "/var/lib/{{ service_accounts.auth.name }}/stacks"
+  - "/var/lib/{{ service_accounts.forgejo.name }}/stacks"
+  - "/var/lib/{{ service_accounts.signoz.name }}/stacks"
+  - "/var/lib/{{ service_accounts.wazuh.name }}/stacks"
+  - "/var/lib/{{ service_accounts.runner.name }}/runner"
+  - "/var/lib/{{ service_accounts.scrapecast.name }}/stacks"
+
+# Loopback-only service ports
+authentik_http_port: 19000
+authentik_metrics_port: 19300
+forgejo_http_port: 13000
+signoz_grpc_port: 14317
+signoz_http_port: 14318
+signoz_ui_port: 18080
+wazuh_dashboard_port: 15601
+waf_http_port: 18090
+waf_status_port: 18091
+host_otlp_grpc_port: 4317
+host_otlp_http_port: 4318
+# Pasta alias for containers that are not on the host network. Traefik uses
+# network_mode: host, so it reaches the collector at 127.0.0.1. Scrapecast
+# still needs this mapping; its 127.0.0.1 is pasta, not the host.
+otel_host_loopback_addr: 169.254.1.3
+scrapecast_web_port: 43147
+scrapecast_api_port: 43148
+
+# Pinned application/tool versions
+traefik_version: "3.7.13"
+modsecurity_crs_image: "ghcr.io/coreruleset/modsecurity-crs:4.28.0-nginx-alpine-202608050608@sha256:11d8ee6d9b36bce287e66702c274f4427cb21a39c69f67663873ef9b7a11d4c7"
+authentik_version: "2026.8.0"
+# Tag 2026.8.0 is a nested OCI index (index of indexes). Debian Podman cannot
+# pull that; pin the linux/amd64 image manifest instead.
+authentik_image: "ghcr.io/goauthentik/server:2026.8.0@sha256:21000cebe8e51eca0620034096586d675cedec8925ac750f7f8966d86eeb0da0"
+forgejo_version: "15.0.7"
+forgejo_runner_version: "13.0.0"
+trivy_version: "0.74.0"
+trivy_release_arch:
+  amd64: 64bit
+  arm64: ARM64
+trivy_scan_schedule: "*-*-* 03:00:00"
+trivy_scan_randomized_delay_seconds: 21600
+trivy_scan_timeout_seconds: 7200
+trivy_report_retention_days: 14
+trivy_scanners: vuln,misconfig,secret
+# Enable after the staggered first scans finish to require report evidence.
+trivy_verify_scan_results: false
+signoz_version: "0.140.0"
+signoz_collector_version: "0.144.9"
+foundry_version: "0.2.17"
+# Foundry compose does until(replicas + 1). 0 is one ClickHouse node.
+signoz_clickhouse_replicas: 0
+signoz_clickhouse_mem_limit: "{{ '2g' if allow_undersized_host | bool else '6g' }}"
+signoz_clickhouse_memory_bytes: "{{ 1610612736 if allow_undersized_host | bool else 5368709120 }}"
+# Set true once to wipe ClickHouse and Keeper volumes after a failed shrink.
+signoz_reset_telemetrystore: false
+# 8 GiB hosts OOM during ClickHouse merges with no swap. 0 skips this.
+undersized_swap_mb: 4096
+wazuh_version: "5.0.0-beta5"
+wazuh_docker_commit: "v5.0.0-beta5"
+# Staging 5.x apt encodes the beta in the filename; the package version is 5.0.0-1.
+wazuh_agent_package_version: "5.0.0-1"
+wazuh_agent_apt_repo: "deb [signed-by=/usr/share/keyrings/wazuh.asc] https://packages-staging.xdrsiem.wazuh.info/pre-release/5.x/apt/ unstable main"
+wazuh_agent_gpg_key: "https://packages-staging.xdrsiem.wazuh.info/key/GPG-KEY-WAZUH"
+# Set true once to drop every svc-wazuh volume after a failed 5.x first start.
+wazuh_reset_store: false
+otelcol_version: "0.159.0"
+zeek_major_version: "8.0"
+silk_version: "3.24.2"
+libfixbuf_version: "2.5.4"
+yaf_version: "2.20.3"
+
+# Supply any additional host-visible bridge/veth names here. Rootless Podman
+# private links do not appear as host NICs; see the visibility section in README.
+sensor_interfaces:
+  - "{{ ansible_default_ipv4.interface }}"
+  - lo
+sensor_home_nets:
+  - "{{ ansible_default_ipv4.network }}/{{ ansible_default_ipv4.prefix }}"
+silk_internal_networks:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+silk_ipfix_base_port: 18001
+
+enable_suricata: true
+enable_zeek: true
+enable_silk: true
+
+# Suricata workers runmode uses one full pipeline thread per AF_PACKET
+# thread. Debian's default is auto (one per CPU) and will fill a small
+# VM. 1 per capture interface leaves cores for Zeek, YAF, and the apps.
+# Raise suricata_af_packet_threads if eve.json shows kernel drops.
+suricata_af_packet_threads: 1
+suricata_detect_thread_ratio: 0.5
+
+# Build parallelism is intentionally bounded to avoid OOM on a VPS.
+source_build_jobs: 2
+
+# Checksums are pinned to the official release artifacts.
+artifact_checksums:
+  foundry:
+    amd64: "51f41204b8048cd1f7e278fb5d2ba5d82d2ee8fb619bfe9330e2f8ceffc0d886"
+    arm64: "1c2ad64cf8794d355eba947a202e1b2bc6fd660bb943735e26d789e00f52fd3a"
+  otelcol_deb:
+    amd64: "4ede8d750d6bf845e353be46cc550f590e6ccdaeeb60aae941cde6ad561877db"
+    arm64: "430469fbfb48f123d08dfc896973bdc205ba393901cc506e92c9c928698a6d5e"
+  forgejo_runner:
+    amd64: "cfcfe65e9ed5c9a4b344acfdbc3c32210b274c005a5888f46967c4d988177707"
+    arm64: "71118fc208efc8853d8e9f400d316bff0eb14cfafc7407ba92ca49eb0972935f"
+  trivy:
+    amd64: "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+    arm64: "b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5"
+  histogram_quantile:
+    amd64: "33997073eb6d82b7be4f27f9fc8ec9e28a395e0f20674d5d54bb2fa28a75488d"
+    arm64: "e5605ebffa82a450ebbcdf6cf19dad546e1e40d52dbf3e03cfd2d2d5b7394211"
+  silk: "9ea9c1391f9c1ba14394af68b2bd7e66bf73b664c3cee342c5a39e5b13e45398"
+  libfixbuf: "106b8e1e560928a4dc91d8264326bd2463767570d77417535964f450de1f972e"
+  yaf: "fb581317124a2a5064c17e211cc2a0226a41f606c2135a5a5c6f672ecf6e4c9f"
+
+forgejo_runner_registration_token: ""
+forgejo_runner_labels: "debian-13:docker://node:24-bookworm,podman-host:host"
+# Same-host runner. The public HTTPS name hairpins through Traefik and can
+# hang forever. Poll Forgejo on loopback. Job clone URLs still use ROOT_URL.
+forgejo_runner_instance_url: "http://127.0.0.1:{{ forgejo_http_port }}/"
+verify_public_https: false
+
+# On-box product. Images come from Forgejo Packages on loopback. The
+# runner never sees this account's volumes or Podman socket.
+enable_scrapecast: true
+scrapecast_image_tag: main
+scrapecast_registry: "127.0.0.1:{{ forgejo_http_port }}"
+scrapecast_image_repository: "{{ forgejo_admin_user }}/scrapecast"
+scrapecast_auth_mode: "off"
+# Packages read token for svc-scrapecast. Create it in Forgejo after the
+# first repo exists. Empty means Ansible renders the stack but does not start it.
+scrapecast_registry_pull_token: ""

@@ -1,0 +1,25 @@
+---
+- name: Refresh dynamic linker cache
+  ansible.builtin.command: /sbin/ldconfig
+  changed_when: true
+
+- name: Reload sensor units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart Suricata sensors
+  ansible.builtin.systemd_service:
+    name: suricata-platform.service
+    state: restarted
+  failed_when: false
+
+- name: Restart SiLK flow pipeline
+  ansible.builtin.systemd_service:
+    name: silk-rwflowpack.service
+    state: restarted
+  failed_when: false
+
+- name: Restart host telemetry collector
+  ansible.builtin.systemd_service:
+    name: otelcol-contrib.service
+    state: restarted

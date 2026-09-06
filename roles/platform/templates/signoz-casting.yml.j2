@@ -1,0 +1,99 @@
+---
+apiVersion: v1alpha1
+kind: Installation
+metadata:
+  name: signoz
+spec:
+  deployment:
+    flavor: compose
+    mode: docker
+  telemetrykeeper:
+    kind: clickhousekeeper
+    spec:
+      image: docker.io/clickhouse/clickhouse-keeper:25.12.5
+  telemetrystore:
+    spec:
+      image: docker.io/clickhouse/clickhouse-server:25.12.5
+      # Foundry compose does until(replicas + 1). 0 forges one
+      # clickhouse-0-0. 1 forges a second node that OOMs an 8 GiB host.
+      cluster: {replicas: {{ signoz_clickhouse_replicas | int }}, shards: 1}
+  metastore:
+    kind: postgres
+    spec:
+      image: docker.io/library/postgres:16-alpine
+  signoz:
+    spec:
+      image: docker.io/signoz/signoz:v{{ signoz_version }}
+  ingester:
+    spec:
+      image: docker.io/signoz/signoz-otel-collector:v{{ signoz_collector_version }}
+  patches:
+    - target: deployment/compose.yaml
+      operations:
+        - op: add
+          path: /services/ingester/container_name
+          value: signoz-ingester
+        # podman-compose waits forever on service_healthy, even when the
+        # dependency is already healthy. ClickHouse then never starts, the
+        # UI does, and every page returns "failed to get tbl statement".
+        - op: replace
+          path: /services/signoz-telemetrystore-clickhouse-0-0/depends_on
+          value:
+            signoz-telemetrykeeper-clickhousekeeper-0:
+              condition: service_started
+            signoz-telemetrystore-clickhouse-user-scripts:
+              condition: service_started
+        - op: replace
+          path: /services/signoz-telemetrystore-clickhouse-user-scripts/command
+          value:
+            - bash
+            - -c
+            - install -m 0755 /opt/signoz-user-scripts/histogramQuantile /var/lib/clickhouse/user_scripts/histogramQuantile
+        - op: replace
+          path: /services/signoz-telemetrystore-clickhouse-user-scripts/volumes
+          value:
+            - signoz-telemetrystore-user-scripts:/var/lib/clickhouse/user_scripts
+            - /var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/user-scripts:/opt/signoz-user-scripts:ro
+        - op: remove
+          path: /services/ingester/deploy
+        - op: replace
+          path: /services/ingester/ports
+          value:
+            - "127.0.0.1:{{ signoz_grpc_port }}:4317"
+            - "127.0.0.1:{{ signoz_http_port }}:4318"
+        - op: replace
+          path: /services/signoz-signoz-0/ports
+          value:
+            - "127.0.0.1:{{ signoz_ui_port }}:8080"
+        - op: replace
+          path: /services/signoz-metastore-postgres-0/environment
+          value:
+            - POSTGRES_DB=signoz
+            - POSTGRES_PASSWORD={{ signoz_postgresql_password }}
+            - POSTGRES_USER=signoz
+        - op: replace
+          path: /services/signoz-signoz-0/environment
+          value:
+            - SIGNOZ_SQLSTORE_POSTGRES_DSN=postgres://signoz:{{ signoz_postgresql_password }}@signoz-metastore-postgres-0:5432/signoz?sslmode=disable
+            - SIGNOZ_SQLSTORE_PROVIDER=postgres
+            - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://signoz-telemetrystore-clickhouse-0-0:9000
+            - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+        - op: add
+          path: /services/signoz-telemetrystore-clickhouse-0-0/mem_limit
+          value: "{{ signoz_clickhouse_mem_limit }}"
+    - target: deployment/telemetrystore/clickhouse/config-0-0.yaml
+      operations:
+        - op: add
+          path: /max_server_memory_usage
+          value: {{ signoz_clickhouse_memory_bytes | int }}
+        - op: add
+          path: /background_pool_size
+          value: 2
+        # 25.12 refuses to start when the default mutation free-entry
+        # count (20) is above pool_size * concurrency_ratio (2 * 2 = 4).
+        - op: add
+          path: /merge_tree
+          value:
+            number_of_free_entries_in_pool_to_execute_mutation: 1
+            number_of_free_entries_in_pool_to_lower_max_size_of_merge: 1
+            number_of_free_entries_in_pool_to_execute_optimize_entire_partition: 1

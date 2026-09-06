@@ -1,0 +1,30 @@
+[Unit]
+Description=Zeek passive network monitor on %I
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeek
+Group=zeek
+WorkingDirectory=/var/log/zeek/%I/current
+ExecStart=/opt/zeek/bin/zeek -i %I local LogAscii::use_json=T
+Restart=on-failure
+RestartSec=5s
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log/zeek/%I
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET
+
+[Install]
+WantedBy=multi-user.target

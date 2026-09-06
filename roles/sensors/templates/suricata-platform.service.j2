@@ -1,0 +1,30 @@
+[Unit]
+Description=Suricata passive IDS on all selected interfaces
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=suricata
+Group=suricata
+WorkingDirectory=/var/log/suricata/platform
+ExecStart=/usr/bin/suricata{% for interface in sensor_interfaces | unique %} -i {{ interface }}{% endfor %} -l /var/log/suricata/platform -c /etc/suricata/suricata.yaml
+Restart=on-failure
+RestartSec=5s
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log/suricata/platform /var/lib/suricata
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET
+
+[Install]
+WantedBy=multi-user.target

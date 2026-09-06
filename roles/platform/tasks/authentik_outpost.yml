@@ -1,0 +1,84 @@
+---
+- name: Define the public Authentik URL and expected proxy hosts
+  ansible.builtin.set_fact:
+    platform_ak_public_url: "https://{{ auth_fqdn }}"
+    platform_ak_wanted_hosts:
+      - "https://{{ observe_fqdn }}"
+      - "https://{{ security_fqdn }}"
+      - "https://{{ traefik_fqdn }}"
+
+- name: List Authentik outposts
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ authentik_http_port }}/api/v3/outposts/instances/?page_size=100"
+    headers:
+      Authorization: "Bearer {{ authentik_bootstrap_token }}"
+    status_code: [200]
+  register: platform_ak_outposts
+  retries: 12
+  delay: 5
+  until: platform_ak_outposts.status | default(0) == 200
+  no_log: true
+
+- name: List Authentik proxy providers
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ authentik_http_port }}/api/v3/providers/proxy/?page_size=100"
+    headers:
+      Authorization: "Bearer {{ authentik_bootstrap_token }}"
+    status_code: [200]
+  register: platform_ak_proxy_providers
+  no_log: true
+
+- name: Require the embedded Authentik outpost
+  ansible.builtin.assert:
+    that:
+      - platform_ak_outposts.json.results | selectattr('name', 'search', 'Embedded') | list | length >= 1
+    fail_msg: "Authentik has no embedded outpost to configure."
+
+- name: Select the embedded outpost
+  ansible.builtin.set_fact:
+    platform_ak_embedded_outpost: "{{ platform_ak_outposts.json.results | selectattr('name', 'search', 'Embedded') | first }}"
+
+- name: Reset matched Authentik proxy provider PKs
+  ansible.builtin.set_fact:
+    platform_ak_matched_pks: []
+
+- name: Match proxy providers to observe, security, and edge
+  ansible.builtin.set_fact:
+    platform_ak_matched_pks: "{{ platform_ak_matched_pks + [item.pk] }}"
+  loop: "{{ platform_ak_proxy_providers.json.results }}"
+  loop_control:
+    label: "{{ item.name | default(item.pk) }}"
+  when: (item.external_host | default('') | regex_replace('/$', '')) in platform_ak_wanted_hosts
+
+- name: Require a proxy provider for each protected host
+  ansible.builtin.assert:
+    that:
+      - platform_ak_matched_pks | length == 3
+    fail_msg: >-
+      protect_admin_apps_with_authentik is true, but Authentik is missing a
+      proxy provider whose external_host is exactly one of
+      {{ platform_ak_wanted_hosts | join(', ') }}. Create those providers,
+      bind the applications, then rerun --tags platform.
+  when: protect_admin_apps_with_authentik | bool
+
+- name: Point the embedded outpost at the public Authentik URL
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ authentik_http_port }}/api/v3/outposts/instances/{{ platform_ak_embedded_outpost.pk }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ authentik_bootstrap_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      providers: "{{ (platform_ak_embedded_outpost.providers + platform_ak_matched_pks) | unique }}"
+      config: "{{ platform_ak_embedded_outpost.config | combine({
+        'authentik_host': platform_ak_public_url,
+        'authentik_host_browser': platform_ak_public_url,
+        'authentik_host_insecure': false
+      }) }}"
+    status_code: [200]
+  no_log: true
+  register: platform_ak_outpost_patch
+  changed_when: >-
+    (platform_ak_embedded_outpost.config.authentik_host | default('')) != platform_ak_public_url
+    or (platform_ak_matched_pks | difference(platform_ak_embedded_outpost.providers | default([])) | length > 0)

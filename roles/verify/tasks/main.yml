@@ -1,0 +1,215 @@
+---
+- name: Read system service facts
+  ansible.builtin.service_facts:
+
+- name: Build the expected core unit list
+  ansible.builtin.set_fact:
+    verify_expected_core_units:
+      - ssh.service
+      - secure-waf.service
+      - secure-auth.service
+      - secure-forgejo.service
+      - secure-signoz.service
+      - secure-wazuh.service
+      - secure-edge.service
+      - otelcol-contrib.service
+      - wazuh-agent.service
+      - fail2ban.service
+
+- name: Require every core service to be active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ item }}"
+  register: verify_core_unit
+  changed_when: false
+  failed_when: verify_core_unit.stdout != "active"
+  loop: "{{ verify_expected_core_units }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Read TCP listeners
+  ansible.builtin.shell: "set -o pipefail && ss -H -ltn | awk '{print $4}'"
+  args:
+    executable: /bin/bash
+  register: verify_tcp_listeners
+  changed_when: false
+
+- name: Identify unexpected non-loopback TCP listeners
+  ansible.builtin.set_fact:
+    verify_unexpected_public_listeners: >-
+      {{ verify_tcp_listeners.stdout_lines
+         | reject('search', '127[.]')
+         | reject('search', '::1')
+         | reject('search', ':' ~ (ssh_port | string) ~ '$')
+         | reject('search', ':' ~ (forgejo_ssh_port | string) ~ '$')
+         | reject('search', ':' ~ (public_port | string) ~ '$')
+         | reject('search', ':5355$')
+         | list }}
+
+- name: Enforce the public-listener invariant
+  ansible.builtin.assert:
+    that: verify_unexpected_public_listeners | length == 0
+    fail_msg: "Unexpected non-loopback TCP listeners: {{ verify_unexpected_public_listeners | join(', ') }}"
+
+- name: Verify the activated nftables policy
+  ansible.builtin.command: nft list table inet ansible_filter
+  register: verify_nft_policy
+  changed_when: false
+  when: firewall_lockdown_confirm | bool
+
+- name: Require the SSH, Forgejo SSH, and HTTPS allow rules and default drop policy
+  ansible.builtin.assert:
+    that:
+      - "'tcp dport' in verify_nft_policy.stdout"
+      - (ssh_port | string) in verify_nft_policy.stdout
+      - (forgejo_ssh_port | string) in verify_nft_policy.stdout
+      - (public_port | string) in verify_nft_policy.stdout
+      - "'policy drop' in verify_nft_policy.stdout"
+  when: firewall_lockdown_confirm | bool
+
+- name: Check public HTTPS routes and trusted ACME certificates
+  ansible.builtin.uri:
+    url: "https://{{ item }}/"
+    method: GET
+    validate_certs: true
+    follow_redirects: none
+    status_code: [200, 301, 302, 303, 307, 308, 401, 403]
+    timeout: 30
+  loop:
+    - "{{ auth_fqdn }}"
+    - "{{ git_fqdn }}"
+    - "{{ observe_fqdn }}"
+    - "{{ security_fqdn }}"
+  when: verify_public_https | bool
+
+- name: Check whether scrapecast is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - secure-scrapecast.service
+  register: verify_scrapecast_enabled
+  changed_when: false
+  failed_when: false
+  when: enable_scrapecast | bool
+
+- name: Check the product apex when scrapecast is running
+  ansible.builtin.uri:
+    url: "https://{{ item }}/"
+    method: GET
+    validate_certs: true
+    follow_redirects: none
+    status_code: [200, 301, 302, 303, 307, 308, 401, 403]
+    timeout: 30
+  loop:
+    - "{{ app_fqdn }}"
+  when:
+    - verify_public_https | bool
+    - enable_scrapecast | bool
+    - verify_scrapecast_enabled.stdout | default('') == "enabled"
+
+- name: Require scrapecast when the unit is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - "{{ item }}"
+  register: verify_scrapecast_unit
+  changed_when: false
+  failed_when: verify_scrapecast_unit.stdout != "active"
+  loop:
+    - secure-scrapecast.service
+    - scrapecast-update.timer
+  when:
+    - enable_scrapecast | bool
+    - verify_scrapecast_enabled.stdout | default('') == "enabled"
+
+- name: Require every enabled network sensor unit to be active
+  ansible.builtin.assert:
+    that:
+      - (item.0 ~ item.1 ~ '.service') in ansible_facts.services
+      - ansible_facts.services[item.0 ~ item.1 ~ '.service'].state == 'running'
+    fail_msg: "{{ item.0 }}{{ item.1 }}.service is not active."
+  loop: >-
+    {{
+      ((['zeek@'] | product(sensor_interfaces | unique) | list) if enable_zeek else [])
+      + ((['yaf-'] | product(sensor_interfaces | unique) | list) if enable_silk else [])
+    }}
+  changed_when: false
+
+- name: Require the multi-interface Suricata service to be active
+  ansible.builtin.assert:
+    that:
+      - "'suricata-platform.service' in ansible_facts.services"
+      - ansible_facts.services['suricata-platform.service'].state == 'running'
+    fail_msg: "suricata-platform.service is not active."
+  when: enable_suricata | bool
+
+- name: Read fail2ban jail status
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/fail2ban-client
+      - status
+  register: verify_fail2ban_status
+  changed_when: false
+
+- name: Require the sshd and forgejo jails
+  ansible.builtin.assert:
+    that:
+      - "'sshd' in verify_fail2ban_status.stdout"
+      - "'forgejo' in verify_fail2ban_status.stdout"
+    fail_msg: "fail2ban is running without the sshd or forgejo jail: {{ verify_fail2ban_status.stdout }}"
+
+- name: Read the installed Trivy version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/trivy
+      - --version
+  register: verify_trivy_version
+  changed_when: false
+
+- name: Require the pinned Trivy version
+  ansible.builtin.assert:
+    that: "'Version: ' ~ trivy_version in verify_trivy_version.stdout"
+    fail_msg: "Expected Trivy {{ trivy_version }}: {{ verify_trivy_version.stdout }}"
+
+- name: Require every account's Trivy timer to be enabled and active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - "{{ item.0 }}"
+      - "trivy-scan-{{ item.1.value.name }}.timer"
+  register: verify_trivy_timer
+  changed_when: false
+  loop: "{{ ['is-enabled', 'is-active'] | product(service_accounts | dict2items) | list }}"
+  loop_control:
+    label: "{{ item.0 }} trivy-scan-{{ item.1.value.name }}.timer"
+
+- name: Check strict Trivy scan evidence
+  ansible.builtin.stat:
+    path: "/var/log/trivy/{{ item.value.name }}/last-scan"
+  register: verify_trivy_last_scan
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+  when: trivy_verify_scan_results | bool
+
+- name: Require a completed scan from every rootless account
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "No completed Trivy scan for {{ item.item.value.name }}."
+  loop: "{{ verify_trivy_last_scan.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.value.name }}"
+  when: trivy_verify_scan_results | bool
+
+- name: Show the final security boundary summary
+  ansible.builtin.debug:
+    msg:
+      - "Public ingress: TCP/{{ ssh_port }} (OpenSSH), TCP/{{ forgejo_ssh_port }} (Forgejo SSH), TCP/{{ public_port }} (Traefik TLS)."
+      - "SSH: public-key only, PermitRootLogin no, AllowUsers {{ admin_user }} on {{ ssh_port }}. Forgejo SSH on {{ forgejo_ssh_port }}."
+      - "Backends: loopback only; rootless Podman accounts have disjoint subuid/subgid ranges."
+      - "Telemetry: Traefik and scrapecast OTLP + WAF stub_status + host metrics/journal + per-account Podman stats -> host collector -> SigNoz."
+      - "Security: host Wazuh agent ingests rootless container journals, FIM, sensor outputs, and per-account Trivy image findings. fail2ban jails sshd and Forgejo into inet f2b-table plus the WAF deny list."

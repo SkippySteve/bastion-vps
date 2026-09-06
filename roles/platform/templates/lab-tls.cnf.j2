@@ -1,0 +1,26 @@
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+req_extensions = v3_req
+x509_extensions = v3_req
+
+[dn]
+CN = {{ traefik_fqdn }}
+O = debian13-secure-platform lab
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = {{ auth_fqdn }}
+DNS.2 = {{ git_fqdn }}
+DNS.3 = {{ observe_fqdn }}
+DNS.4 = {{ security_fqdn }}
+DNS.5 = {{ traefik_fqdn }}
+DNS.6 = *.{{ base_domain }}
+DNS.7 = {{ base_domain }}

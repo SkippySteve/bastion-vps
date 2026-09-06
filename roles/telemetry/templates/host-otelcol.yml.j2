@@ -1,0 +1,111 @@
+---
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-contrib/storage
+    create_directory: true
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:{{ host_otlp_grpc_port }}
+      http:
+        endpoint: 127.0.0.1:{{ host_otlp_http_port }}
+  nginx:
+    endpoint: "http://127.0.0.1:{{ waf_status_port }}/nginx_status"
+    collection_interval: 30s
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      disk: {}
+      filesystem:
+        exclude_mount_points:
+          mount_points: [/dev/*, /proc/*, /sys/*, /run/user/*]
+          match_type: regexp
+      load: {}
+      memory: {}
+      network: {}
+      paging: {}
+      processes: {}
+  journald:
+    directory: /var/log/journal
+    start_at: end
+    priority: info
+    storage: file_storage
+    all: false
+  filelog/security:
+    include:
+      - /var/log/suricata/*/eve.json
+      - /var/log/zeek/*/current/*.log
+      - /var/log/silk/*.log
+    start_at: end
+    include_file_name: true
+    include_file_path: true
+    storage: file_storage
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: forgejo
+          scrape_interval: 30s
+          static_configs:
+            - targets: ["127.0.0.1:{{ forgejo_http_port }}"]
+        - job_name: authentik
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["127.0.0.1:{{ authentik_metrics_port }}"]
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 512
+    spike_limit_mib: 128
+  resourcedetection:
+    detectors: [system, env]
+    timeout: 5s
+    override: false
+  resource/platform:
+    attributes:
+      - key: deployment.environment.name
+        value: production
+        action: upsert
+      - key: service.namespace
+        value: secure-vps
+        action: upsert
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  otlp/signoz:
+    endpoint: 127.0.0.1:{{ signoz_grpc_port }}
+    tls: {insecure: true}
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+
+service:
+  extensions: [file_storage, health_check]
+  telemetry:
+    logs: {level: info}
+    metrics: {level: none}
+  pipelines:
+    metrics:
+      receivers: [otlp, hostmetrics, prometheus, nginx]
+      processors: [memory_limiter, resourcedetection, resource/platform, batch]
+      exporters: [otlp/signoz]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource/platform, batch]
+      exporters: [otlp/signoz]
+    logs:
+      receivers: [otlp, journald, filelog/security]
+      processors: [memory_limiter, resourcedetection, resource/platform, batch]
+      exporters: [otlp/signoz]

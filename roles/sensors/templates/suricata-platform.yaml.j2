@@ -1,0 +1,20 @@
+%YAML 1.1
+---
+# Suricata has no CPU-percent cap. Thread count is the throttle.
+# workers runmode runs one full detect pipeline per AF_PACKET thread.
+# Debian's default threads: auto follows every CPU and will fill a
+# small VM. Keep this at 1 unless you are dropping packets on a large host.
+threading:
+  set-cpu-affinity: no
+  detect-thread-ratio: {{ suricata_detect_thread_ratio }}
+
+af-packet:
+{% for iface in sensor_interfaces | unique %}
+  - interface: {{ iface }}
+    threads: {{ suricata_af_packet_threads }}
+    cluster-id: {{ 99 - loop.index0 }}
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+{% endfor %}

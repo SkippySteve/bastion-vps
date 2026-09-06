@@ -1,0 +1,53 @@
+---
+# Heal a host that previously ran the uncommitted OpenSSH git passthrough.
+# Host SSH stays ops-only. Forgejo keys live in Forgejo, not on the VPS.
+- name: Remove leftover Forgejo SSH passthrough wrappers and sudoers
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/sbin/forgejo-keys
+    - /usr/local/sbin/forgejo-serv
+    - /usr/local/sbin/forgejo-ssh-exec
+    - /usr/local/sbin/forgejo-ssh-shell
+    - /etc/sudoers.d/forgejo-ssh
+
+- name: Check for leftover git Match sshd drop-in
+  ansible.builtin.stat:
+    path: /etc/ssh/sshd_config.d/99-forgejo-git.conf
+  register: forgejo_git_sshd_dropin
+
+- name: Remove leftover git Match sshd drop-in
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/99-forgejo-git.conf
+    state: absent
+  notify: Restart SSH
+  when: forgejo_git_sshd_dropin.stat.exists
+
+- name: Validate sshd after dropping git Match
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -t
+  when: forgejo_git_sshd_dropin.stat.exists
+  changed_when: false
+
+- name: Reload sshd after dropping git Match
+  ansible.builtin.meta: flush_handlers
+
+- name: Remove leftover forgejo-ssh-shell from /etc/shells
+  ansible.builtin.lineinfile:
+    path: /etc/shells
+    regexp: 'forgejo-ssh-shell'
+    state: absent
+
+- name: Remove leftover host git account
+  ansible.builtin.user:
+    name: git
+    state: absent
+    remove: true
+
+- name: Remove leftover git home if the account is already gone
+  ansible.builtin.file:
+    path: /var/lib/git
+    state: absent

@@ -1,0 +1,266 @@
+---
+- name: Install host bootstrap and rootless container packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    state: present
+    name:
+      - acl
+      - apache2-utils
+      - ca-certificates
+      - curl
+      - dbus-user-session
+      - fuse-overlayfs
+      - git
+      - gnupg
+      - jq
+      - nftables
+      - nodejs
+      - passt
+      - podman
+      - podman-compose
+      - rsync
+      - slirp4netns
+      - sudo
+      - uidmap
+      - unzip
+
+- name: Set the platform hostname
+  ansible.builtin.hostname:
+    name: "{{ platform_hostname }}"
+
+- name: Create the provisioning operator
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    uid: "{{ admin_uid }}"
+    groups: sudo
+    append: true
+    shell: /bin/bash
+    create_home: true
+    password: "{{ admin_password_hash }}"
+    update_password: always
+
+- name: Install operator SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    key: "{{ item }}"
+    state: present
+    exclusive: false
+  loop: "{{ admin_authorized_keys }}"
+
+- name: Create locked rootless service accounts
+  ansible.builtin.user:
+    name: "{{ item.value.name }}"
+    uid: "{{ item.value.uid }}"
+    home: "/var/lib/{{ item.value.name }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+    password_lock: true
+    groups: ""
+    system: true
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+
+- name: Make every service-account home private
+  ansible.builtin.file:
+    path: "/var/lib/{{ item.value.name }}"
+    state: directory
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0700"
+  loop: "{{ service_accounts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.name }}"
+
+- name: Allocate non-overlapping subordinate UID ranges
+  ansible.builtin.lineinfile:
+    path: /etc/subuid
+    regexp: "^{{ item.value.name }}:"
+    line: "{{ item.value.name }}:{{ item.value.subid_start }}:{{ subid_count }}"
+    create: true
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+
+- name: Allocate non-overlapping subordinate GID ranges
+  ansible.builtin.lineinfile:
+    path: /etc/subgid
+    regexp: "^{{ item.value.name }}:"
+    line: "{{ item.value.name }}:{{ item.value.subid_start }}:{{ subid_count }}"
+    create: true
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+
+- name: Create private stack and container configuration directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ item.0.value.name }}/{{ item.1 }}"
+    state: directory
+    owner: "{{ item.0.value.name }}"
+    group: "{{ item.0.value.name }}"
+    mode: "0700"
+  loop: "{{ service_accounts | dict2items | product(['stacks', '.config', '.config/containers']) | list }}"
+  loop_control:
+    label: "/var/lib/{{ item.0.value.name }}/{{ item.1 }}"
+
+- name: Configure journald as the default rootless Podman log driver
+  ansible.builtin.template:
+    src: containers.conf.j2
+    dest: "/var/lib/{{ item.value.name }}/.config/containers/containers.conf"
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0600"
+  loop: "{{ service_accounts | dict2items }}"
+  notify: Restart secure edge
+
+- name: Permit loopback Forgejo registry access for the runner and app
+  ansible.builtin.template:
+    src: registries.conf.j2
+    dest: "/var/lib/{{ item.value.name }}/.config/containers/registries.conf"
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0600"
+  loop: "{{ service_accounts | dict2items }}"
+  when: item.key in ['runner', 'scrapecast']
+
+- name: Enable persistent system journals
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+  notify: Restart systemd-journald
+
+- name: Permit unprivileged user namespaces
+  ansible.posix.sysctl:
+    name: kernel.unprivileged_userns_clone
+    value: "1"
+    state: present
+    sysctl_set: true
+    reload: true
+    sysctl_file: /etc/sysctl.d/90-secure-platform.conf
+
+- name: Provide the virtual-memory map capacity required by the indexers
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    sysctl_set: true
+    reload: true
+    sysctl_file: /etc/sysctl.d/90-secure-platform.conf
+
+- name: Allow the rootless edge proxy to bind TCP {{ public_port }}
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ public_port }}"
+    state: present
+    sysctl_set: true
+    reload: true
+    sysctl_file: /etc/sysctl.d/90-secure-platform.conf
+  notify: Restart secure edge
+
+# Debian 13 systemd-sysctl ignores /etc/sysctl.conf. Keep a leftover
+# copy of that file in the drop-in dir so older keys still apply.
+- name: Check for a leftover /etc/sysctl.conf
+  ansible.builtin.stat:
+    path: /etc/sysctl.conf
+  register: base_sysctl_conf
+
+- name: Expose /etc/sysctl.conf to systemd-sysctl
+  ansible.builtin.file:
+    src: /etc/sysctl.conf
+    dest: /etc/sysctl.d/99-sysctl.conf
+    state: link
+    force: false
+  when: base_sysctl_conf.stat.exists
+
+- name: Enable lingering rootless service managers
+  ansible.builtin.command: "loginctl enable-linger {{ item.value.name }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ item.value.name }}"
+  loop: "{{ service_accounts | dict2items }}"
+
+- name: Start rootless Podman API sockets for metrics collection
+  ansible.builtin.systemd_service:
+    name: "podman.socket"
+    scope: user
+    enabled: true
+    state: started
+  become: true
+  become_user: "{{ item.value.name }}"
+  environment:
+    HOME: "/var/lib/{{ item.value.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ item.value.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ item.value.uid }}/bus"
+  loop: "{{ service_accounts | dict2items }}"
+
+- name: Install the hardened SSH daemon drop-in
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/90-secure-platform.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart SSH
+
+- name: Validate the complete SSH daemon configuration
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Apply SSH daemon changes before dropping the multiplexer
+  ansible.builtin.meta: flush_handlers
+
+- name: Stop leftover SSH and TLS multiplexer
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - haproxy-multiplex.service
+    - haproxy.service
+  failed_when: false
+
+- name: Remove leftover multiplexer unit and configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/haproxy-multiplex.service
+    - /etc/haproxy/platform-multiplex.cfg
+  notify: Reload systemd
+
+- name: Remove unused HAProxy package
+  ansible.builtin.apt:
+    name: haproxy
+    state: absent
+
+- name: Render the candidate inbound-only nftables policy
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf.ansible-candidate
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "/usr/sbin/nft -c -f %s"
+
+- name: Activate the nftables policy after explicit confirmation
+  when: firewall_lockdown_confirm | bool
+  block:
+    - name: Install the confirmed nftables policy
+      ansible.builtin.copy:
+        src: /etc/nftables.conf.ansible-candidate
+        dest: /etc/nftables.conf
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Restart nftables
+
+    - name: Enable nftables on boot
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        enabled: true
+        state: started
+
+- name: Apply bootstrap service changes now
+  ansible.builtin.meta: flush_handlers

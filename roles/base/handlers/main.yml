@@ -1,0 +1,25 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart SSH
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: restarted
+
+- name: Restart nftables
+  ansible.builtin.systemd_service:
+    name: nftables.service
+    state: restarted
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald.service
+    state: restarted
+
+- name: Restart secure edge
+  ansible.builtin.systemd_service:
+    name: secure-edge.service
+    state: restarted
+  failed_when: false

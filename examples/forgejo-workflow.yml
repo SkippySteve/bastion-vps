@@ -1,0 +1,67 @@
+---
+name: rootless-podman-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  # Demo image only. A Go/Python/Node repo should override container.image in
+  # the job, as scrapecast does. This label is not a generic toolchain.
+  test:
+    runs-on: debian-13
+    container:
+      image: node:24-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies reproducibly
+        run: npm ci
+      - name: Test
+        run: npm test
+
+  # Builds run through the runner account's rootless Podman service. Do not add
+  # a docker:dind service, privileged=true, or host application volume mounts.
+  # Push the result to Forgejo Packages on 127.0.0.1. Do not restart other
+  # service accounts or mount their volumes from this job.
+  build-image:
+    # Host execution remains confined to the unprivileged svc-runner account.
+    runs-on: podman-host
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build without Docker-in-Docker
+        run: podman --remote build --pull=always -t localhost/example:${{ forgejo.sha }} .
+      - name: Write Trivy JSON and SARIF reports
+        run: |
+          trivy image \
+            --image-src podman \
+            --podman-host "$XDG_RUNTIME_DIR/podman/podman.sock" \
+            --format json \
+            --output trivy-results.json \
+            "localhost/example:${{ forgejo.sha }}"
+          trivy image \
+            --image-src podman \
+            --podman-host "$XDG_RUNTIME_DIR/podman/podman.sock" \
+            --format sarif \
+            --output trivy-results.sarif \
+            "localhost/example:${{ forgejo.sha }}"
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ forgejo.sha }}
+          if-no-files-found: warn
+          path: |
+            trivy-results.json
+            trivy-results.sarif
+      - name: Block fixable high and critical vulnerabilities
+        run: |
+          trivy image \
+            --image-src podman \
+            --podman-host "$XDG_RUNTIME_DIR/podman/podman.sock" \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            "localhost/example:${{ forgejo.sha }}"
+      - name: Push only after the Trivy gate passes
+        run: podman --remote push "localhost/example:${{ forgejo.sha }}"

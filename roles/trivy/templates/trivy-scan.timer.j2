@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Trivy scans for {{ item.value.name }}
+
+[Timer]
+OnActiveSec={{ 15 + (trivy_timer_index * 5) }}min
+OnCalendar={{ trivy_scan_schedule }}
+RandomizedDelaySec={{ trivy_scan_randomized_delay_seconds }}
+Persistent=true
+Unit=trivy-scan-{{ item.value.name }}.service
+
+[Install]
+WantedBy=timers.target

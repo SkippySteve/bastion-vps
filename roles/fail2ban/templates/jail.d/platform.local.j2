@@ -1,0 +1,41 @@
+# Managed by Ansible. nftables-allports owns table inet f2b-table so
+# ansible_filter reloads do not clear bans.
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1{{ (' ' ~ (fail2ban_ignoreip | join(' '))) if fail2ban_ignoreip else '' }}
+bantime = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_sshd_maxretry }}
+allowipv6 = auto
+banaction = nftables
+banaction_allports = nftables-allports
+logtarget = /var/log/fail2ban.log
+
+[sshd]
+enabled = true
+backend = systemd
+maxretry = {{ fail2ban_sshd_maxretry }}
+findtime = {{ fail2ban_findtime }}
+bantime = {{ fail2ban_bantime }}
+action = nftables-allports
+         nftables-waf
+
+[forgejo]
+enabled = true
+filter = forgejo
+backend = systemd
+journalmatch = CONTAINER_NAME=forgejo
+maxretry = {{ fail2ban_forgejo_maxretry }}
+findtime = {{ fail2ban_forgejo_findtime }}
+bantime = {{ fail2ban_bantime }}
+action = nftables-allports
+         nftables-waf
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+backend = auto
+bantime = {{ fail2ban_recidive_bantime }}
+findtime = {{ fail2ban_recidive_findtime }}
+maxretry = {{ fail2ban_recidive_maxretry }}
+action = nftables-allports
+         nftables-waf

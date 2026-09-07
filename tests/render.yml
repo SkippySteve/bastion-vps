@@ -93,6 +93,12 @@
         - {src: ../roles/platform/templates/waf-compose.yml.j2, dest: waf-compose.yml}
         - {src: ../roles/platform/templates/waf-default.conf.template.j2, dest: waf.conf}
         - {src: ../roles/platform/templates/waf-crs-exclusions.conf.j2, dest: waf-crs-exclusions.conf}
+        - {src: ../roles/platform/templates/crowdsec-compose.yml.j2, dest: crowdsec-compose.yml}
+        - {src: ../roles/platform/templates/crowdsec-config.yaml.local.j2, dest: crowdsec-config.yaml.local}
+        - {src: ../roles/platform/templates/crowdsec-appsec-acquis.yaml.j2, dest: crowdsec-appsec-acquis.yaml}
+        - {src: ../roles/platform/templates/crowdsec-appsec-config.yaml.j2, dest: crowdsec-appsec-config.yaml}
+        - {src: ../roles/platform/templates/crowdsec-appsec-rule-def.yaml.j2, dest: crowdsec-appsec-rule-def.yaml}
+        - {src: ../roles/platform/templates/crowdsec-appsec-rules.conf.j2, dest: crowdsec-appsec-rules.conf}
         - {src: ../roles/platform/templates/authentik-compose.yml.j2, dest: authentik-compose.yml}
         - {src: ../roles/platform/templates/forgejo-compose.yml.j2, dest: forgejo-compose.yml}
         - {src: ../roles/platform/templates/signoz-casting.yml.j2, dest: signoz-casting.yml}
@@ -177,12 +183,26 @@
           - traefik_lab_dynamic.http.routers.authentik.observability.tracing | bool
           - traefik_lab_dynamic.http.routers.authentik.observability.metrics | bool
           - traefik_lab_dynamic.http.routers.authentik.observability.accessLogs | bool
-          - traefik_lab_dynamic.http.routers.forgejo.service == "waf"
+          - traefik_lab_dynamic.http.routers.authentik.service == "authentik"
+          - traefik_lab_dynamic.http.routers.forgejo.service == "forgejo"
+          - traefik_lab_dynamic.http.routers.signoz.service == "signoz"
+          - traefik_lab_dynamic.http.routers.wazuh.service == "wazuh"
+          - traefik_lab_dynamic.http.routers.crowdsec.service == "crowdsec"
+          - traefik_lab_dynamic.http.routers.crowdsec.rule == "Host(`" ~ crowdsec_fqdn ~ "`)"
           - traefik_lab_dynamic.http.routers.scrapecast.rule == "Host(`" ~ app_fqdn ~ "`)"
           - traefik_lab_dynamic.http.routers['scrapecast-www'].middlewares == ["www-to-apex", "public-chain"]
           - traefik_lab_dynamic.http.routers.signoz.middlewares == ["bootstrap-admin-chain"]
           - traefik_lab_dynamic.http.routers['traefik-dashboard'] is not defined
           - traefik_lab_dynamic.tls.certificates | length == 1
+          - traefik_lab_dynamic.http.middlewares['crowdsec-bouncer'].plugin['crowdsec-bouncer'].enabled | bool
+          - traefik_lab_dynamic.http.middlewares['crowdsec-bouncer'].plugin['crowdsec-bouncer'].crowdsecAppsecEnabled | bool
+          - "'18085' in traefik_lab_dynamic.http.middlewares['crowdsec-bouncer'].plugin['crowdsec-bouncer'].crowdsecLapiHost"
+          - "'17422' in traefik_lab_dynamic.http.middlewares['crowdsec-bouncer'].plugin['crowdsec-bouncer'].crowdsecAppsecHost"
+          - "'crowdsec-bouncer' in traefik_lab_dynamic.http.middlewares['public-chain'].chain.middlewares"
+          - "'crowdsec-bouncer' in traefik_lab_dynamic.http.middlewares['admin-chain'].chain.middlewares"
+          - "'crowdsec-bouncer' in traefik_lab_dynamic.http.middlewares['bootstrap-admin-chain'].chain.middlewares"
+          - traefik_lab_dynamic.http.services.crowdsec.loadBalancer.servers[0].url == "http://127.0.0.1:18092"
+          - traefik_lab_dynamic.http.serversTransports['wazuh-transport'].rootCAs == ["/etc/traefik/wazuh-root-ca.pem"]
 
     - name: Render Traefik static config for TLS-ALPN ACME
       ansible.builtin.template:
@@ -257,10 +277,11 @@
       ansible.builtin.assert:
         that:
           - traefik_protect_dynamic.http.routers.signoz.middlewares == ["admin-chain"]
+          - traefik_protect_dynamic.http.routers.crowdsec.middlewares == ["admin-chain"]
           - traefik_protect_dynamic.http.routers['traefik-dashboard'].service == "api@internal"
           - traefik_protect_dynamic.http.services['authentik-outpost'].loadBalancer.servers[0].url == "http://127.0.0.1:19000"
 
-    - name: Read rendered CI and scrapecast files
+    - name: Read rendered CI, scrapecast, and WAF files
       ansible.builtin.slurp:
         src: "{{ item }}"
       loop:
@@ -271,9 +292,15 @@
         - "{{ render_root }}/scrapecast-compose.yml"
         - "{{ render_root }}/waf-compose.yml"
         - "{{ render_root }}/waf-crs-exclusions.conf"
+        - "{{ render_root }}/crowdsec-compose.yml"
+        - "{{ render_root }}/crowdsec-config.yaml.local"
+        - "{{ render_root }}/crowdsec-appsec-acquis.yaml"
+        - "{{ render_root }}/crowdsec-appsec-config.yaml"
+        - "{{ render_root }}/crowdsec-appsec-rule-def.yaml"
+        - "{{ render_root }}/crowdsec-appsec-rules.conf"
       register: scrapecast_render_raw
 
-    - name: Decode rendered CI and scrapecast files
+    - name: Decode rendered CI, scrapecast, and WAF files
       ansible.builtin.set_fact:
         render_forgejo_compose: "{{ scrapecast_render_raw.results[0].content | b64decode | from_yaml }}"
         render_runner_config: "{{ scrapecast_render_raw.results[1].content | b64decode | from_yaml }}"
@@ -282,6 +309,12 @@
         render_scrapecast_compose: "{{ scrapecast_render_raw.results[4].content | b64decode | from_yaml }}"
         render_waf_compose: "{{ scrapecast_render_raw.results[5].content | b64decode | from_yaml }}"
         render_waf_exclusions: "{{ scrapecast_render_raw.results[6].content | b64decode }}"
+        render_crowdsec_compose: "{{ scrapecast_render_raw.results[7].content | b64decode | from_yaml }}"
+        render_crowdsec_config_local: "{{ scrapecast_render_raw.results[8].content | b64decode | from_yaml }}"
+        render_crowdsec_appsec_acquis: "{{ scrapecast_render_raw.results[9].content | b64decode | from_yaml }}"
+        render_crowdsec_appsec_config: "{{ scrapecast_render_raw.results[10].content | b64decode | from_yaml }}"
+        render_crowdsec_appsec_rule_def: "{{ scrapecast_render_raw.results[11].content | b64decode | from_yaml }}"
+        render_crowdsec_appsec_rules: "{{ scrapecast_render_raw.results[12].content | b64decode }}"
 
     - name: Read rendered sshd and nftables
       ansible.builtin.slurp:
@@ -381,6 +414,45 @@
           - "'ctl:ruleRemoveTargetById=942100;ARGS:options' in render_waf_exclusions"
           - "'ctl:ruleRemoveTargetById=942100;ARGS:activeLogId' in render_waf_exclusions"
           - "'ctl:ruleRemoveById=942100' not in render_waf_exclusions"
+
+    - name: Require CrowdSec 1.8.1 stack, AppSec, Web UI, and ported SecLang exclusions
+      ansible.builtin.assert:
+        that:
+          - render_crowdsec_compose.services.crowdsec.image == "docker.io/crowdsecurity/crowdsec:v1.8.1"
+          - render_crowdsec_compose.services.crowdsec.network_mode == "host"
+          - "'crowdsecurity/appsec-bot-challenge' in render_crowdsec_compose.services.crowdsec.environment.COLLECTIONS"
+          - "'crowdsecurity/appsec-virtual-patching' in render_crowdsec_compose.services.crowdsec.environment.COLLECTIONS"
+          - "'crowdsecurity/appsec-generic-rules' in render_crowdsec_compose.services.crowdsec.environment.COLLECTIONS"
+          - render_crowdsec_compose.services['web-ui'].image == "ghcr.io/theduffman85/crowdsec-web-ui:latest"
+          - render_crowdsec_compose.services['web-ui'].environment.CONFIG_SERVER_PORT == "18092"
+          - render_crowdsec_compose.services['web-ui'].environment.CONFIG_INSTANCE_LAPI_URL == "http://127.0.0.1:18085"
+          - render_crowdsec_compose.services['web-ui'].environment.CONFIG_INSTANCE_LAPI_AUTH_USERNAME == "crowdsec-web-ui"
+          - render_crowdsec_config_local.api.server.listen_uri == "127.0.0.1:18085"
+          - render_crowdsec_config_local.prometheus.listen_port == 18086
+          - render_crowdsec_appsec_acquis.listen_addr == "127.0.0.1:17422"
+          - "'crowdsecurity/appsec-bot-challenge' in render_crowdsec_appsec_acquis.appsec_configs"
+          - "'platform/appsec-config' in render_crowdsec_appsec_acquis.appsec_configs"
+          - render_crowdsec_appsec_config.inband_rules == ["platform/exclusions"]
+          - render_crowdsec_appsec_rule_def.seclang_rules_file == ["platform-exclusions.conf"]
+          - "'id:10001' in render_crowdsec_appsec_rules"
+          - "'id:10002' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveByTag=bot-challenge' in render_crowdsec_appsec_rules"
+          - ("@streq " ~ git_fqdn) in render_crowdsec_appsec_rules
+          - "'ctl:ruleRemoveById=920440' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveById=930130' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveById=930140' in render_crowdsec_appsec_rules"
+          - "'info/refs' in render_crowdsec_appsec_rules"
+          - "'git-upload-pack' in render_crowdsec_appsec_rules"
+          - "'git-receive-pack' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveTargetById=942360;ARGS:content' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:content' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveTargetByTag=attack-rce;ARGS:content' in render_crowdsec_appsec_rules"
+          - ("@streq " ~ observe_fqdn) in render_crowdsec_appsec_rules
+          - "'@streq /logs/logs-explorer' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveTargetById=942100;ARGS:compositeQuery' in render_crowdsec_appsec_rules"
+          - ("@streq " ~ security_fqdn) in render_crowdsec_appsec_rules
+          - "'@streq /internal/search/opensearch-with-long-numerals' in render_crowdsec_appsec_rules"
+          - "'ctl:ruleRemoveTargetById=942220;ARGS:json.params.body.highlight.fragment_size' in render_crowdsec_appsec_rules"
 
     - name: Read rendered fail2ban files
       ansible.builtin.slurp:
@@ -492,9 +564,9 @@
         that:
           - render_host_otelcol.receivers.otlp.protocols.grpc.endpoint == "127.0.0.1:4317"
           - render_host_otelcol.receivers.otlp.protocols.http.endpoint == "127.0.0.1:4318"
-          - render_host_otelcol.receivers.nginx.endpoint == "http://127.0.0.1:18091/nginx_status"
+          - (render_host_otelcol.receivers.prometheus.config.scrape_configs | selectattr('job_name', 'equalto', 'crowdsec') | first).static_configs[0].targets[0] == "127.0.0.1:18086"
           - "'otlp' in render_host_otelcol.service.pipelines.metrics.receivers"
-          - "'nginx' in render_host_otelcol.service.pipelines.metrics.receivers"
+          - "'nginx' not in render_host_otelcol.service.pipelines.metrics.receivers"
           - "'otlp' in render_host_otelcol.service.pipelines.traces.receivers"
           - "'otlp' in render_host_otelcol.service.pipelines.logs.receivers"
           - "'journald/operations' in render_host_otelcol.service.pipelines.logs.receivers"
@@ -507,6 +579,8 @@
           - render_traefik_static.entryPoints.websecure.observability.metrics | bool
           - render_traefik_static.entryPoints.websecure.observability.accessLogs | bool
           - render_traefik_static.experimental.otlpLogs | bool
+          - render_traefik_static.experimental.plugins['crowdsec-bouncer'].moduleName == "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+          - render_traefik_static.experimental.plugins['crowdsec-bouncer'].version == "v1.7.1"
           - render_traefik_static.log.otlp.http.endpoint == "http://127.0.0.1:4318/v1/logs"
           - render_traefik_static.accessLog.otlp.serviceName == "traefik"
           - render_traefik_static.accessLog.otlp.http.endpoint == "http://127.0.0.1:4318/v1/logs"
@@ -1079,3 +1153,48 @@
           - "'IP:127.0.0.1' in wazuh_certs_src"
           - "'*-key.pem' in wazuh_certs_src"
           - "'chmod 640' in wazuh_certs_src"
+
+    - name: Render Traefik dynamic, static, and otelcol with ModSecurity fallback
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ render_root }}/{{ item.dest }}"
+        mode: "0600"
+      vars:
+        waf_provider: modsecurity
+        traefik_acme_enabled: false
+      loop:
+        - {src: ../roles/platform/templates/traefik-dynamic.yml.j2, dest: dynamic/platform.modsec.yml}
+        - {src: ../roles/platform/templates/traefik-static.yml.j2, dest: traefik-static.modsec.yml}
+        - {src: ../roles/telemetry/templates/host-otelcol.yml.j2, dest: host-otelcol.modsec.yml}
+        - {src: ../roles/fail2ban/templates/action.d/nftables-waf.conf.j2, dest: fail2ban-nftables-waf.modsec.conf}
+
+    - name: Read ModSecurity fallback renderings
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}"
+      loop:
+        - dynamic/platform.modsec.yml
+        - traefik-static.modsec.yml
+        - host-otelcol.modsec.yml
+        - fail2ban-nftables-waf.modsec.conf
+      register: modsec_fallback_raw
+
+    - name: Decode ModSecurity fallback renderings
+      ansible.builtin.set_fact:
+        modsec_dynamic: "{{ modsec_fallback_raw.results[0].content | b64decode | from_yaml }}"
+        modsec_static: "{{ modsec_fallback_raw.results[1].content | b64decode | from_yaml }}"
+        modsec_otelcol: "{{ modsec_fallback_raw.results[2].content | b64decode | from_yaml }}"
+        modsec_fail2ban: "{{ modsec_fallback_raw.results[3].content | b64decode }}"
+
+    - name: Require ModSecurity fallback to preserve legacy proxy and scrape behaviors
+      ansible.builtin.assert:
+        that:
+          - modsec_dynamic.http.routers.forgejo.service == "waf"
+          - modsec_dynamic.http.routers.authentik.service == "waf"
+          - modsec_dynamic.http.routers.signoz.service == "waf"
+          - modsec_dynamic.http.routers.wazuh.service == "waf"
+          - modsec_dynamic.http.services.waf.loadBalancer.servers[0].url == "http://127.0.0.1:18090"
+          - "'crowdsec-bouncer' not in modsec_dynamic.http.middlewares['public-chain'].chain.middlewares"
+          - modsec_static.experimental.plugins is not defined
+          - modsec_otelcol.receivers.nginx.endpoint == "http://127.0.0.1:18091/nginx_status"
+          - "'nginx' in modsec_otelcol.service.pipelines.metrics.receivers"
+          - "'podman exec modsecurity-crs nginx -s reload' in modsec_fail2ban"

@@ -9,6 +9,10 @@ admin_password_hash: "CHANGE_ME_PASSWORD_HASH"
 acme_email: "CHANGE_ME@example.com"
 bootstrap_admin_htpasswd: "CHANGE_ME_BCRYPT_HTPASSWD_LINE"
 
+# CrowdSec API Keys (32-64 hex/alphanumeric characters)
+vault_crowdsec_bouncer_api_key: "CHANGE_ME_CROWDSEC_BOUNCER_KEY"
+vault_crowdsec_web_ui_api_key: "CHANGE_ME_CROWDSEC_WEB_UI_KEY"
+
 authentik_postgresql_password: "CHANGE_ME_ALPHANUMERIC"
 authentik_secret_key: "CHANGE_ME_50_PLUS_RANDOM_CHARS"
 authentik_bootstrap_password: "CHANGE_ME"

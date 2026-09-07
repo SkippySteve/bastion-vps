@@ -1,0 +1,319 @@
+# CrowdSec AppSec (Coraza) Platform Exclusions and Custom Rules
+
+# Hidden .git directory protection
+SecRule REQUEST_URI "@rx /\.git(?:/|$)" \
+ "id:10001,\
+  phase:1,\
+  deny,\
+  status:403,\
+  msg:'Block hidden .git path'"
+
+# Bypass bot challenge on API, health, telemetry, and automated machine endpoints
+SecRule REQUEST_URI "@rx (?:^|/)(?:api/|outpost\.goauthentik\.io/|info/refs|git-upload-pack|git-receive-pack|v1/logs|healthz)" \
+ "id:10002,\
+  phase:1,\
+  pass,\
+  nolog,\
+  ctl:ruleRemoveByTag=bot-challenge"
+
+# Forgejo serves repository files whose names CRS would otherwise treat as
+# restricted extensions (.sh, .cfg, .conf) or restricted files (.gitignore).
+# Forgejo also legitimately processes repository files, pull requests, issues,
+# comments, commit messages, and markdown containing code snippets, SQL
+# keywords (such as DELETE, SELECT, DROP), shell syntax, and diffs.
+# Exclude user content parameters from attack inspection on git.<domain>.
+# Leave smart HTTP on CRS so clone stays on SSH :2222.
+SecRule REQUEST_HEADERS:Host "@streq {{ git_fqdn }}" \
+ "id:10010,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "!@rx (?:^|/)(?:info/refs|git-upload-pack|git-receive-pack)(?:\?|$)" \
+ "t:none,\
+  ctl:ruleRemoveById=920440,\
+  ctl:ruleRemoveById=930130,\
+  ctl:ruleRemoveById=930140,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:content,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:commit_message,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:title,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:text,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:patch,\
+  ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-xss;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-rce;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-lfi;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-generic;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-injection-php;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=attack-injection-java;ARGS:q,\
+  ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:q,\
+  ctl:ruleRemoveTargetById=942100;ARGS:content,\
+  ctl:ruleRemoveTargetById=942110;ARGS:content,\
+  ctl:ruleRemoveTargetById=942120;ARGS:content,\
+  ctl:ruleRemoveTargetById=942130;ARGS:content,\
+  ctl:ruleRemoveTargetById=942150;ARGS:content,\
+  ctl:ruleRemoveTargetById=942180;ARGS:content,\
+  ctl:ruleRemoveTargetById=942200;ARGS:content,\
+  ctl:ruleRemoveTargetById=942210;ARGS:content,\
+  ctl:ruleRemoveTargetById=942230;ARGS:content,\
+  ctl:ruleRemoveTargetById=942240;ARGS:content,\
+  ctl:ruleRemoveTargetById=942260;ARGS:content,\
+  ctl:ruleRemoveTargetById=942300;ARGS:content,\
+  ctl:ruleRemoveTargetById=942340;ARGS:content,\
+  ctl:ruleRemoveTargetById=942350;ARGS:content,\
+  ctl:ruleRemoveTargetById=942360;ARGS:content,\
+  ctl:ruleRemoveTargetById=942370;ARGS:content,\
+  ctl:ruleRemoveTargetById=942380;ARGS:content,\
+  ctl:ruleRemoveTargetById=942390;ARGS:content,\
+  ctl:ruleRemoveTargetById=942400;ARGS:content,\
+  ctl:ruleRemoveTargetById=942410;ARGS:content,\
+  ctl:ruleRemoveTargetById=942420;ARGS:content,\
+  ctl:ruleRemoveTargetById=942430;ARGS:content,\
+  ctl:ruleRemoveTargetById=942440;ARGS:content,\
+  ctl:ruleRemoveTargetById=942450;ARGS:content,\
+  ctl:ruleRemoveTargetById=942460;ARGS:content,\
+  ctl:ruleRemoveTargetById=942500;ARGS:content,\
+  ctl:ruleRemoveTargetById=942510;ARGS:content,\
+  ctl:ruleRemoveTargetById=942550;ARGS:content,\
+  ctl:ruleRemoveTargetById=942100;ARGS:title,\
+  ctl:ruleRemoveTargetById=942110;ARGS:title,\
+  ctl:ruleRemoveTargetById=942120;ARGS:title,\
+  ctl:ruleRemoveTargetById=942130;ARGS:title,\
+  ctl:ruleRemoveTargetById=942150;ARGS:title,\
+  ctl:ruleRemoveTargetById=942180;ARGS:title,\
+  ctl:ruleRemoveTargetById=942200;ARGS:title,\
+  ctl:ruleRemoveTargetById=942210;ARGS:title,\
+  ctl:ruleRemoveTargetById=942230;ARGS:title,\
+  ctl:ruleRemoveTargetById=942240;ARGS:title,\
+  ctl:ruleRemoveTargetById=942260;ARGS:title,\
+  ctl:ruleRemoveTargetById=942300;ARGS:title,\
+  ctl:ruleRemoveTargetById=942340;ARGS:title,\
+  ctl:ruleRemoveTargetById=942350;ARGS:title,\
+  ctl:ruleRemoveTargetById=942360;ARGS:title,\
+  ctl:ruleRemoveTargetById=942370;ARGS:title,\
+  ctl:ruleRemoveTargetById=942380;ARGS:title,\
+  ctl:ruleRemoveTargetById=942390;ARGS:title,\
+  ctl:ruleRemoveTargetById=942400;ARGS:title,\
+  ctl:ruleRemoveTargetById=942410;ARGS:title,\
+  ctl:ruleRemoveTargetById=942420;ARGS:title,\
+  ctl:ruleRemoveTargetById=942430;ARGS:title,\
+  ctl:ruleRemoveTargetById=942440;ARGS:title,\
+  ctl:ruleRemoveTargetById=942450;ARGS:title,\
+  ctl:ruleRemoveTargetById=942460;ARGS:title,\
+  ctl:ruleRemoveTargetById=942500;ARGS:title,\
+  ctl:ruleRemoveTargetById=942510;ARGS:title,\
+  ctl:ruleRemoveTargetById=942550;ARGS:title,\
+  ctl:ruleRemoveTargetById=942100;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942110;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942120;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942130;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942150;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942180;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942200;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942210;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942230;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942240;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942260;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942300;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942340;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942350;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942360;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942370;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942380;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942390;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942400;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942410;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942420;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942430;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942440;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942450;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942460;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942500;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942510;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942550;ARGS:commit_message,\
+  ctl:ruleRemoveTargetById=942100;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942110;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942120;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942130;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942150;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942180;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942200;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942210;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942230;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942240;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942260;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942300;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942340;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942350;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942360;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942370;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942380;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942390;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942400;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942410;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942420;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942430;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942440;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942450;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942460;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942500;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942510;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942550;ARGS:commit_summary,\
+  ctl:ruleRemoveTargetById=942100;ARGS:text,\
+  ctl:ruleRemoveTargetById=942110;ARGS:text,\
+  ctl:ruleRemoveTargetById=942120;ARGS:text,\
+  ctl:ruleRemoveTargetById=942130;ARGS:text,\
+  ctl:ruleRemoveTargetById=942150;ARGS:text,\
+  ctl:ruleRemoveTargetById=942180;ARGS:text,\
+  ctl:ruleRemoveTargetById=942200;ARGS:text,\
+  ctl:ruleRemoveTargetById=942210;ARGS:text,\
+  ctl:ruleRemoveTargetById=942230;ARGS:text,\
+  ctl:ruleRemoveTargetById=942240;ARGS:text,\
+  ctl:ruleRemoveTargetById=942260;ARGS:text,\
+  ctl:ruleRemoveTargetById=942300;ARGS:text,\
+  ctl:ruleRemoveTargetById=942340;ARGS:text,\
+  ctl:ruleRemoveTargetById=942350;ARGS:text,\
+  ctl:ruleRemoveTargetById=942360;ARGS:text,\
+  ctl:ruleRemoveTargetById=942370;ARGS:text,\
+  ctl:ruleRemoveTargetById=942380;ARGS:text,\
+  ctl:ruleRemoveTargetById=942390;ARGS:text,\
+  ctl:ruleRemoveTargetById=942400;ARGS:text,\
+  ctl:ruleRemoveTargetById=942410;ARGS:text,\
+  ctl:ruleRemoveTargetById=942420;ARGS:text,\
+  ctl:ruleRemoveTargetById=942430;ARGS:text,\
+  ctl:ruleRemoveTargetById=942440;ARGS:text,\
+  ctl:ruleRemoveTargetById=942450;ARGS:text,\
+  ctl:ruleRemoveTargetById=942460;ARGS:text,\
+  ctl:ruleRemoveTargetById=942500;ARGS:text,\
+  ctl:ruleRemoveTargetById=942510;ARGS:text,\
+  ctl:ruleRemoveTargetById=942550;ARGS:text"
+
+# SigNoz's logs explorer stores its structured query as a deliberately
+# double-encoded URL argument. The decoded JSON contains SQL-like operators
+# (AND, count(), quoted values), which can trip CRS SQL-injection signatures.
+# Keep CRS enabled everywhere else and remove only SQLi inspection from these
+# three SigNoz-owned arguments on the exact explorer endpoint.
+SecRule REQUEST_HEADERS:Host "@streq {{ observe_fqdn }}" \
+ "id:10011,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "@streq /logs/logs-explorer" \
+ "t:none,\
+  ctl:ruleRemoveTargetById=942100;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942110;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942120;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942130;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942150;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942180;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942200;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942210;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942230;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942240;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942260;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942300;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942340;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942350;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942360;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942370;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942380;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942390;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942400;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942410;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942420;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942430;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942440;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942450;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942460;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942500;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942510;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942550;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942100;ARGS:options,\
+  ctl:ruleRemoveTargetById=942110;ARGS:options,\
+  ctl:ruleRemoveTargetById=942120;ARGS:options,\
+  ctl:ruleRemoveTargetById=942130;ARGS:options,\
+  ctl:ruleRemoveTargetById=942150;ARGS:options,\
+  ctl:ruleRemoveTargetById=942180;ARGS:options,\
+  ctl:ruleRemoveTargetById=942200;ARGS:options,\
+  ctl:ruleRemoveTargetById=942210;ARGS:options,\
+  ctl:ruleRemoveTargetById=942230;ARGS:options,\
+  ctl:ruleRemoveTargetById=942240;ARGS:options,\
+  ctl:ruleRemoveTargetById=942260;ARGS:options,\
+  ctl:ruleRemoveTargetById=942300;ARGS:options,\
+  ctl:ruleRemoveTargetById=942340;ARGS:options,\
+  ctl:ruleRemoveTargetById=942350;ARGS:options,\
+  ctl:ruleRemoveTargetById=942360;ARGS:options,\
+  ctl:ruleRemoveTargetById=942370;ARGS:options,\
+  ctl:ruleRemoveTargetById=942380;ARGS:options,\
+  ctl:ruleRemoveTargetById=942390;ARGS:options,\
+  ctl:ruleRemoveTargetById=942400;ARGS:options,\
+  ctl:ruleRemoveTargetById=942410;ARGS:options,\
+  ctl:ruleRemoveTargetById=942420;ARGS:options,\
+  ctl:ruleRemoveTargetById=942430;ARGS:options,\
+  ctl:ruleRemoveTargetById=942440;ARGS:options,\
+  ctl:ruleRemoveTargetById=942450;ARGS:options,\
+  ctl:ruleRemoveTargetById=942500;ARGS:options,\
+  ctl:ruleRemoveTargetById=942510;ARGS:options,\
+  ctl:ruleRemoveTargetById=942550;ARGS:options,\
+  ctl:ruleRemoveTargetById=942100;ARGS:activeLogId"
+
+# Wazuh Dashboard Discover legitimately probes the signed 32-bit upper bound
+# (2147483647) in this internal request. CRS 942220 classifies that value as
+# an integer-overflow probe. Limit the exclusion to the security host, exact
+# endpoint, exact JSON argument, and the single offending rule.
+SecRule REQUEST_HEADERS:Host "@streq {{ security_fqdn }}" \
+ "id:10012,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "@streq /internal/search/opensearch-with-long-numerals" \
+ "t:none,\
+  ctl:ruleRemoveTargetById=942220;ARGS:json.params.body.highlight.fragment_size"

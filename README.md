@@ -2,7 +2,7 @@
 
 Ansible recipes that turn a fresh Debian 13 machine into a hardened, single-node application and security platform. Public TCP exposure is restricted to ports `22` (ops OpenSSH), `2222` (Forgejo git SSH), and `443` (HTTPS). Everything else installed by this project listens strictly on localhost.
 
-You will get Traefik, an OWASP ModSecurity WAF, Authentik identity management, Forgejo git hosting, SigNoz observability, Wazuh SIEM/XDR, scheduled Trivy container image scanning, a Forgejo Actions runner with rootless Podman, an optional on-box application stack (`svc-scrapecast`), and optional network packet sensors (Suricata IDS, Zeek NSM, YAF/SiLK IPFIX flow logging).
+You will get Traefik, a CrowdSec v1.8.1 AppSec WAF and threat intelligence engine (or optional ModSecurity + CRS), Authentik identity management, Forgejo git hosting, SigNoz observability, Wazuh SIEM/XDR, scheduled Trivy container image scanning, a Forgejo Actions runner with rootless Podman, an optional on-box application stack (`svc-scrapecast`), and optional network packet sensors (Suricata IDS, Zeek NSM, YAF/SiLK IPFIX flow logging).
 
 Deployment is designed to be streamlined and efficient: in normal circumstances it requires only a **single automated playbook execution**. For ongoing maintenance and development, finely scoped execution tags let you update individual services (such as Suricata rules or firewall filters) in seconds rather than waiting for multi-role rebuilds.
 
@@ -255,7 +255,7 @@ Playbook tasks and roles are tagged granularly. Use the `--tags` flag to execute
 | `dns` | `dns` | 5 sec | Upserts Cloudflare DNS-only A-records for base domain and subdomains. |
 | `platform` | `platform` | 2–5 min | Configures service accounts, directories, and Podman Compose stacks for all admin services. |
 | `edge` / `traefik` | `platform` (edge stack) | 10 sec | Configures Traefik reverse proxy, dynamic file providers, TLS certificates, and headers. |
-| `waf` | `platform` (waf stack) | 8 sec | Configures ModSecurity + OWASP Core Rule Set reverse proxy containers. |
+| `waf` | `platform` (waf stack) | 8 sec | Configures CrowdSec v1.8.1 (default) or ModSecurity + CRS reverse proxy containers, AppSec WAF, and Web UI. |
 | `auth` / `authentik`| `platform` (auth stack) | 20 sec | Deploys Authentik server, worker, and PostgreSQL database. |
 | `forgejo` | `platform` (forgejo stack)| 15 sec | Deploys Forgejo Git server, configuration, and SQLite storage. |
 | `signoz` | `platform` (signoz stack) | 30 sec | Deploys SigNoz observability stack, ClickHouse, Keeper, and query engine. |
@@ -350,16 +350,19 @@ These safety gates prevent accidental lockout during automated deployments:
 | `git_fqdn` | `git.{{ base_domain }}` | FQDN for Forgejo Git and Packages. |
 | `observe_fqdn` | `observe.{{ base_domain }}` | FQDN for the SigNoz observability dashboard. |
 | `security_fqdn` | `security.{{ base_domain }}` | FQDN for the Wazuh SIEM/XDR dashboard. |
+| `crowdsec_fqdn` | `waf.{{ base_domain }}` | FQDN for the CrowdSec Web UI (protected by Authentik forward-auth). |
 | `traefik_fqdn` | `edge.{{ base_domain }}` | FQDN for the Traefik management dashboard. |
 | `app_fqdn` | `{{ base_domain }}` | Apex domain routed to the optional on-box app (`scrapecast`). |
 | `app_www_fqdn` | `www.{{ base_domain }}` | WWW domain redirected to `app_fqdn`. |
+| `waf_provider` | `crowdsec` | WAF engine selection: `crowdsec` (default, with AppSec WAF, bot challenge, and Web UI) or `modsecurity` (fallback reverse proxy). |
+| `crowdsec_enroll_key` | `""` | Optional enrollment key to connect instance to CrowdSec Console (`https://app.crowdsec.net`). |
 | `cloudflare_dns_enabled` | `false` | When `true`, the `dns` role creates DNS-only A-records in Cloudflare using the vault token. |
 | `cloudflare_zone` | `{{ base_domain }}` | Cloudflare DNS zone name. Change if `base_domain` is a subdomain within a larger zone. |
 | `cloudflare_record_ipv4` | `""` | IP address to publish in DNS. If empty, uses `ansible_default_ipv4.address`. |
 | `traefik_acme_enabled` | `{{ not base_domain.endswith('.local') }}` | Enables automatic Let's Encrypt certificate issuance via ACME. |
 | `traefik_acme_challenge` | `tls` | ACME challenge type: `tls` (TLS-ALPN-01 on TCP 443 for public VPS) or `dns` (DNS-01 via Cloudflare for private labs). |
 | `traefik_acme_ca_server` | *(commented)* | Uncomment to use Let's Encrypt Staging directory (`https://acme-staging-v02.api.letsencrypt.org/directory`) to avoid rate limits. |
-| `protect_admin_apps_with_authentik` | `true` | When `true`, Traefik enforces Authentik forward-auth SSO in front of SigNoz, Wazuh, and Traefik dashboard. |
+| `protect_admin_apps_with_authentik` | `true` | When `true`, Traefik enforces Authentik forward-auth SSO in front of SigNoz, Wazuh, CrowdSec Web UI, and Traefik dashboard. |
 
 ### 4. Hardware Sizing & Resource Tuning
 
@@ -403,8 +406,12 @@ All internal services bind strictly to loopback (`127.0.0.1`):
 | `signoz_http_port` | `14318` | SigNoz query service HTTP |
 | `wazuh_dashboard_port` | `15601` | Wazuh Kibana/OpenSearch web dashboard |
 | `wazuh_indexer_port` | `19200` | Wazuh OpenSearch indexer REST API |
-| `waf_http_port` | `18090` | ModSecurity OWASP Core Rule Set reverse proxy |
-| `waf_status_port` | `18091` | ModSecurity Nginx stub_status metrics |
+| `crowdsec_lapi_port` | `18085` | CrowdSec Local API (LAPI) engine |
+| `crowdsec_appsec_port` | `17422` | CrowdSec AppSec WAF acquisition endpoint |
+| `crowdsec_metrics_port` | `18086` | CrowdSec Prometheus metrics endpoint |
+| `crowdsec_web_ui_port` | `18092` | CrowdSec Web UI management dashboard |
+| `waf_http_port` | `18090` | ModSecurity OWASP Core Rule Set reverse proxy (when `waf_provider: modsecurity`) |
+| `waf_status_port` | `18091` | ModSecurity Nginx stub_status metrics (when `waf_provider: modsecurity`) |
 | `host_otlp_grpc_port` | `4317` | Host OpenTelemetry Collector gRPC receiver |
 | `host_otlp_http_port` | `4318` | Host OpenTelemetry Collector HTTP receiver |
 | `scrapecast_web_port` | `43147` | Scrapecast web frontend |
@@ -438,6 +445,8 @@ These secrets are generated automatically by `./generate-vault.sh` and stored in
 | `wazuh_dashboard_service_password`| Password used by the Wazuh dashboard to communicate with the indexer. |
 | `wazuh_dashboard_service_hash` | Bcrypt hash of `wazuh_dashboard_service_password`. |
 | `wazuh_api_password` | Password for the Wazuh manager REST API (`wazuh-wui`). |
+| `vault_crowdsec_bouncer_api_key` | API key used by Traefik CrowdSec bouncer plugin to communicate with CrowdSec LAPI. |
+| `vault_crowdsec_web_ui_api_key` | API credentials for the self-hosted CrowdSec Web UI container to authenticate with LAPI. |
 | `cloudflare_api_token` | *(Optional)* Cloudflare API token with `Zone.DNS Edit` and `Zone.Zone Read` permissions. |
 | `backup_b2_key_id` | *(Optional)* Backblaze B2 Application Key ID for off-site backups. |
 | `backup_b2_application_key` | *(Optional)* Backblaze B2 Application Key secret. |
@@ -484,7 +493,7 @@ sudo nft list table inet ansible_filter
 |---|---|---|---|
 | **Host System** | nftables, OpenSSH, OTel Collector, Wazuh Agent, Rustinel | `22/tcp`, `2222/tcp`, `443/tcp` | Native Debian 13 host processes hardened according to CIS benchmarks. |
 | `svc-edge` | Traefik v3, ACME client, security middleware | `0.0.0.0:443` | Rootless account. Terminates public TLS; routes to localhost backends. |
-| `svc-waf` | Nginx + ModSecurity v3 + OWASP Core Rule Set | `127.0.0.1:18090` | Rootless account. Inspects incoming HTTP requests for malicious payloads. |
+| `svc-waf` | CrowdSec v1.8.1 (AppSec Coraza WAF + Web UI) or ModSecurity v3 + CRS | `127.0.0.1:18085`, `17422`, `18092` (CrowdSec) / `18090` (ModSecurity) | Rootless account. Inspects incoming HTTP requests for malicious payloads and manages threat intelligence decisions. |
 | `svc-auth` | Authentik server, worker, PostgreSQL | `127.0.0.1:19000` | Rootless account. Identity provider, SSO, and forward-auth gateway. |
 | `svc-forgejo` | Forgejo Git, SQLite database | `127.0.0.1:13000` (HTTP), `0.0.0.0:2222` (SSH) | Rootless account. Self-hosted Git repositories and OCI package registry. |
 | `svc-signoz` | SigNoz, ClickHouse, Keeper, OTel collector | `127.0.0.1:18080`, `14317` | Rootless account. Application metrics, distributed traces, and operations logs. |
@@ -554,6 +563,7 @@ Off-site backups use `resticprofile` and `restic` targeting Backblaze B2 (or any
 
 - [Debian 13 Podman Documentation](https://packages.debian.org/trixie/podman) and [OpenSSH](https://packages.debian.org/trixie/openssh-server)
 - [Traefik v3 Documentation](https://doc.traefik.io/traefik/)
+- [CrowdSec Security Engine & AppSec WAF](https://docs.crowdsec.net/)
 - [OWASP ModSecurity Core Rule Set](https://coreruleset.org/)
 - [Authentik Documentation](https://docs.goauthentik.io/)
 - [Forgejo Administrator Guide](https://forgejo.org/docs/latest/admin/)

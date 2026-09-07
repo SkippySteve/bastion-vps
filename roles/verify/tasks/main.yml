@@ -9,13 +9,15 @@
       - secure-waf.service
       - secure-auth.service
       - secure-forgejo.service
-      - secure-signoz.service
-      - secure-wazuh.service
       - secure-edge.service
       - otelcol-contrib.service
-      - wazuh-agent.service
       - auditd.service
       - fail2ban.service
+
+- name: Add legacy observability units to the verification list
+  ansible.builtin.set_fact:
+    verify_expected_core_units: "{{ verify_expected_core_units + ['secure-signoz.service', 'secure-wazuh.service', 'wazuh-agent.service'] }}"
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Require every core service to be active
   ansible.builtin.command:

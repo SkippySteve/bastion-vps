@@ -42,6 +42,7 @@ services:
     image: {{ victoria_grafana_image }}
     environment:
       GF_SECURITY_ADMIN_PASSWORD: {{ victoria_grafana_admin_password | default('change-me-before-deploy') | to_json }}
+      GF_INSTALL_PLUGINS: victoriametrics-logs-datasource
     volumes: [grafana:/var/lib/grafana, ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/victoria.yml:ro]
     ports: ["127.0.0.1:{{ victoria_grafana_port }}:3000"]
 volumes:

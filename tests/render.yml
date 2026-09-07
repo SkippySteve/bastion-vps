@@ -369,6 +369,11 @@
           - "'info/refs' in render_waf_exclusions"
           - "'git-upload-pack' in render_waf_exclusions"
           - "'git-receive-pack' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942360;ARGS:content' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:content' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetByTag=attack-rce;ARGS:content' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942360;ARGS:title' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942360;ARGS:commit_message' in render_waf_exclusions"
           - "'ctl:ruleEngine=Off' not in render_waf_exclusions"
           - ("@streq " ~ observe_fqdn) in render_waf_exclusions
           - "'@streq /logs/logs-explorer' in render_waf_exclusions"

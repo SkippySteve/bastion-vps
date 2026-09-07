@@ -265,6 +265,15 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Refresh the Wazuh CA used for live verification
+  ansible.builtin.copy:
+    src: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node/config/root-ca/certs/root-ca.pem"
+    dest: /etc/platform-wazuh/root-ca.pem
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Check the publisher privilege boundary before executing code
   ansible.builtin.command:
     argv:

@@ -1,10 +1,14 @@
 # Debian 13 secure Podman platform
 
-Ansible recipes that turn a fresh Debian 13 machine into a hardened, single-node application and security platform. Public TCP exposure is restricted to ports `22` (ops OpenSSH), `2222` (Forgejo git SSH), and `443` (HTTPS). Everything else installed by this project listens strictly on localhost.
+Ship to production, learn fast. Staging environments can't replicate production reality. We're now observing real adversarial activity, live traffic patterns, and actual bottlenecks as they happen.
+
+Ansible recipes that turn a fresh Debian 13 machine into a hardened, single-node application and security platform.
 
 You will get Traefik, a CrowdSec v1.8.1 AppSec WAF and threat intelligence engine (or optional ModSecurity + CRS), Authentik identity management, Forgejo git hosting, SigNoz observability, Wazuh SIEM/XDR, scheduled Trivy container image scanning, a Forgejo Actions runner with rootless Podman, an optional on-box application stack (`svc-scrapecast`), and optional network packet sensors (Suricata IDS, Zeek NSM, YAF/SiLK IPFIX flow logging).
 
 Deployment is designed to be streamlined and efficient: in normal circumstances it requires only a **single automated playbook execution**. For ongoing maintenance and development, finely scoped execution tags let you update individual services (such as Suricata rules or firewall filters) in seconds rather than waiting for multi-role rebuilds.
+
+Public TCP exposure is restricted to ports `22` (ops OpenSSH), `2222` (Forgejo git SSH), and `443` (HTTPS). Everything else installed by this project listens strictly on localhost.
 
 ---
 
@@ -354,7 +358,8 @@ These safety gates prevent accidental lockout during automated deployments:
 | `traefik_fqdn` | `edge.{{ base_domain }}` | FQDN for the Traefik management dashboard. |
 | `app_fqdn` | `{{ base_domain }}` | Apex domain routed to the optional on-box app (`scrapecast`). |
 | `app_www_fqdn` | `www.{{ base_domain }}` | WWW domain redirected to `app_fqdn`. |
-| `waf_provider` | `crowdsec` | WAF engine selection: `crowdsec` (default, with AppSec WAF, bot challenge, and Web UI) or `modsecurity` (fallback reverse proxy). |
+| `waf_provider` | `crowdsec` | WAF engine selection: `crowdsec` (default, with decision-stream bouncer and Web UI) or `modsecurity` (fallback reverse proxy). |
+| `crowdsec_appsec_enabled` | `false` | Enables inline CrowdSec AppSec inspection in Traefik. Leave disabled until a live canary confirms no false positives. |
 | `crowdsec_enroll_key` | `""` | Optional enrollment key to connect instance to CrowdSec Console (`https://app.crowdsec.net`). |
 | `cloudflare_dns_enabled` | `false` | When `true`, the `dns` role creates DNS-only A-records in Cloudflare using the vault token. |
 | `cloudflare_zone` | `{{ base_domain }}` | Cloudflare DNS zone name. Change if `base_domain` is a subdomain within a larger zone. |

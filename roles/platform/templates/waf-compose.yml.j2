@@ -8,7 +8,7 @@ services:
     environment:
       PORT: "{{ waf_http_port }}"
       WAF_STATUS_PORT: "{{ waf_status_port }}"
-      MODSEC_RULE_ENGINE: "On"
+      MODSEC_RULE_ENGINE: "{{ modsecurity_rule_engine | default('On') }}"
       MODSEC_AUDIT_ENGINE: "RelevantOnly"
       MODSEC_AUDIT_LOG: "/dev/stdout"
       MODSEC_AUDIT_LOG_FORMAT: "JSON"

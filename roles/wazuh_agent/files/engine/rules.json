@@ -513,11 +513,9 @@
       },
       "logsource": {"product": "platform-security", "category": "endpoint"},
       "detection": {
-        "condition": "edr_alert and rule_identity and severity and engine and dataset",
+        "condition": "edr_alert and rule_identity and dataset",
         "edr_alert": {"event.module": "edr"},
         "rule_identity": {"rule.name|exists": true, "rule.id|exists": true},
-        "severity": {"edr.rule.severity|exists": true},
-        "engine": {"edr.rule.engine|exists": true},
         "dataset": {"event.dataset|startswith": "edr."}
       }
     }

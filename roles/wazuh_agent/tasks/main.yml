@@ -162,12 +162,12 @@
     - {name: rules.json, directory: /etc/platform-wazuh, mode: "0600"}
     - {name: publish.py, directory: /usr/local/libexec/platform-wazuh, mode: "0700"}
 
-- name: Pin the existing Wazuh CA for publisher migration without rotating trust
+- name: Synchronize the Wazuh CA used by the publisher
   ansible.builtin.copy:
     src: "{{ wazuh_agent_stack_dir }}/config/root-ca/certs/root-ca.pem"
     dest: /etc/platform-wazuh/root-ca.pem
     remote_src: true
-    force: false
+    force: true
     owner: root
     group: root
     mode: "0600"
@@ -386,7 +386,7 @@
 
     - name: Stage the Wazuh Indexer client certificate for Content Manager publishing
       ansible.builtin.copy:
-        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin.pem"
+        src: "{{ wazuh_agent_stack_dir }}/config/wazuh_indexer/certs/admin.pem"
         dest: /etc/platform-wazuh/admin.pem
         remote_src: true
         owner: root
@@ -397,7 +397,7 @@
 
     - name: Stage the Wazuh Indexer client key for Content Manager publishing
       ansible.builtin.copy:
-        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin-key.pem"
+        src: "{{ wazuh_agent_stack_dir }}/config/wazuh_indexer/certs/admin-key.pem"
         dest: /etc/platform-wazuh/admin-key.pem
         remote_src: true
         owner: root
@@ -447,12 +447,11 @@
       register: wazuh_indexer_publish_diagnostics
       changed_when: false
       failed_when: false
-    - name: Fail with the Indexer diagnostics instead of hiding a reset connection
+    - name: Fail with publisher diagnostics
       ansible.builtin.fail:
         msg: >-
-          Wazuh Content Manager publisher could not reach the Indexer. The
-          Indexer may be restarting, OOM-killed, or rejecting TLS. Last
-          publisher error: {{ wazuh_agent_engine_publish.stderr | default('unknown') }}
+          Wazuh Content Manager publisher failed. Last publisher error:
+          {{ wazuh_agent_engine_publish.stderr | default('unknown') }}
           Recent indexer logs:
           {{ wazuh_indexer_publish_diagnostics.stdout | default('unavailable') }}
   always:

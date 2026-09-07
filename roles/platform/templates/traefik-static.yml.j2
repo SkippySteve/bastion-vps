@@ -102,3 +102,9 @@ tracing:
 
 experimental:
   otlpLogs: true
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+  plugins:
+    crowdsec-bouncer:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: {{ crowdsec_traefik_plugin_version }}
+{% endif %}

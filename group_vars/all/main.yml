@@ -30,6 +30,7 @@ auth_fqdn: "auth.{{ base_domain }}"
 git_fqdn: "git.{{ base_domain }}"
 observe_fqdn: "observe.{{ base_domain }}"
 security_fqdn: "security.{{ base_domain }}"
+crowdsec_fqdn: "waf.{{ base_domain }}"
 traefik_fqdn: "edge.{{ base_domain }}"
 app_fqdn: "{{ base_domain }}"
 app_www_fqdn: "www.{{ base_domain }}"
@@ -47,6 +48,7 @@ cloudflare_dns_names:
   - "{{ git_fqdn }}"
   - "{{ observe_fqdn }}"
   - "{{ security_fqdn }}"
+  - "{{ crowdsec_fqdn }}"
   - "{{ traefik_fqdn }}"
   - "{{ app_fqdn }}"
   - "{{ app_www_fqdn }}"
@@ -148,6 +150,9 @@ wazuh_host_fim_paths:
   - "/var/lib/{{ service_accounts.scrapecast.name }}/.config/containers"
   - "/var/lib/{{ service_accounts.scrapecast.name }}/.config/otelcol-podman.yml"
 
+# WAF Engine Selection: 'crowdsec' (default) or 'modsecurity' (fallback)
+waf_provider: crowdsec
+
 # Loopback-only service ports
 authentik_http_port: 19000
 authentik_metrics_port: 19300
@@ -159,6 +164,10 @@ wazuh_dashboard_port: 15601
 wazuh_indexer_port: 19200
 waf_http_port: 18090
 waf_status_port: 18091
+crowdsec_lapi_port: 18085
+crowdsec_appsec_port: 17422
+crowdsec_metrics_port: 18086
+crowdsec_web_ui_port: 18092
 host_otlp_grpc_port: 4317
 host_otlp_http_port: 4318
 # Pasta alias for containers that are not on the host network. Traefik uses
@@ -170,6 +179,22 @@ scrapecast_api_port: 43148
 
 # Pinned application/tool versions
 traefik_version: "3.7.13"
+crowdsec_version: "1.8.1"
+crowdsec_image: "docker.io/crowdsecurity/crowdsec:v1.8.1"
+crowdsec_web_ui_image: "ghcr.io/theduffman85/crowdsec-web-ui:latest"
+crowdsec_traefik_plugin_version: "v1.7.1"
+crowdsec_collections:
+  - crowdsecurity/linux
+  - crowdsecurity/traefik
+  - crowdsecurity/appsec-virtual-patching
+  - crowdsecurity/appsec-generic-rules
+  - crowdsecurity/appsec-bot-challenge
+  - crowdsecurity/whitelist-good-actors
+  - crowdsecurity/http-cve
+# Optional CrowdSec Console enrollment key (leave empty if not enrolling)
+crowdsec_enroll_key: ""
+crowdsec_bouncer_api_key: "{{ vault_crowdsec_bouncer_api_key | default('test-crowdsec-bouncer-key-0123456789abcdef') }}"
+crowdsec_web_ui_api_key: "{{ vault_crowdsec_web_ui_api_key | default('test-crowdsec-webui-key-0123456789abcdef') }}"
 modsecurity_crs_image: "ghcr.io/coreruleset/modsecurity-crs:4.28.0-nginx-alpine-202608050608@sha256:11d8ee6d9b36bce287e66702c274f4427cb21a39c69f67663873ef9b7a11d4c7"
 authentik_version: "2026.8.0"
 # Tag 2026.8.0 is a nested OCI index (index of indexes). Debian Podman cannot

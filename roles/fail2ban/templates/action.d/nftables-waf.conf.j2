@@ -11,4 +11,8 @@ actionunban = flock <wafdeny> sh -c 'grep -vxF "deny <ip>;" "<wafdeny>" > "<wafd
 
 [Init]
 wafdeny = /var/lib/{{ service_accounts.waf.name }}/stacks/waf/fail2ban-deny.conf
+{% if waf_provider | default('crowdsec') == 'modsecurity' %}
 wafreload = runuser -u {{ service_accounts.waf.name }} -- env HOME=/var/lib/{{ service_accounts.waf.name }} XDG_RUNTIME_DIR=/run/user/{{ service_accounts.waf.uid }} /usr/bin/podman exec modsecurity-crs nginx -s reload
+{% else %}
+wafreload = /bin/true
+{% endif %}

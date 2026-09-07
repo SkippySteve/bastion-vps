@@ -121,6 +121,8 @@ forgejo_secret_key="$(rand_base64_token)"
 forgejo_internal_token="$(rand_base64_token)"
 authentik_bootstrap_password="$(rand_app_password)"
 forgejo_admin_password="$(rand_app_password)"
+vault_crowdsec_bouncer_api_key="$(rand_hex_32)"
+vault_crowdsec_web_ui_api_key="$(rand_hex_32)"
 
 wazuh_indexer_admin_password="$(generate_wazuh_password)"
 wazuh_dashboard_service_password="$(generate_wazuh_password)"
@@ -155,6 +157,9 @@ admin_password_hash: $(yaml_quote "$admin_password_hash")
 
 acme_email: $(yaml_quote "$acme_email")
 bootstrap_admin_htpasswd: $(yaml_quote "$bootstrap_admin_htpasswd")
+
+vault_crowdsec_bouncer_api_key: $(yaml_quote "$vault_crowdsec_bouncer_api_key")
+vault_crowdsec_web_ui_api_key: $(yaml_quote "$vault_crowdsec_web_ui_api_key")
 
 authentik_postgresql_password: $(yaml_quote "$authentik_postgresql_password")
 authentik_secret_key: $(yaml_quote "$authentik_secret_key")

@@ -2,10 +2,14 @@
 - name: Define the public Authentik URL and expected proxy hosts
   ansible.builtin.set_fact:
     platform_ak_public_url: "https://{{ auth_fqdn }}"
-    platform_ak_wanted_hosts:
-      - "https://{{ observe_fqdn }}"
-      - "https://{{ security_fqdn }}"
-      - "https://{{ traefik_fqdn }}"
+    platform_ak_wanted_hosts: >-
+      {{
+        [
+          "https://" ~ observe_fqdn,
+          "https://" ~ security_fqdn,
+          "https://" ~ traefik_fqdn
+        ] + (["https://" ~ crowdsec_fqdn] if (waf_provider | default('crowdsec') == 'crowdsec') else [])
+      }}
 
 - name: List Authentik outposts
   ansible.builtin.uri:
@@ -53,7 +57,7 @@
 - name: Require a proxy provider for each protected host
   ansible.builtin.assert:
     that:
-      - platform_ak_matched_pks | length == 3
+      - platform_ak_matched_pks | length == platform_ak_wanted_hosts | length
     fail_msg: >-
       protect_admin_apps_with_authentik is true, but Authentik is missing a
       proxy provider whose external_host is exactly one of

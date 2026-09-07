@@ -71,6 +71,11 @@
         {'account': 'edge', 'directory': 'edge/config/dynamic'},
         {'account': 'edge', 'directory': 'edge/tls'},
         {'account': 'waf', 'directory': 'waf'},
+        {'account': 'waf', 'directory': 'waf/config/acquis.d'},
+        {'account': 'waf', 'directory': 'waf/config/appsec-configs'},
+        {'account': 'waf', 'directory': 'waf/config/appsec-rules'},
+        {'account': 'waf', 'directory': 'waf/data'},
+        {'account': 'waf', 'directory': 'waf/web-ui-data'},
         {'account': 'auth', 'directory': 'auth'},
         {'account': 'forgejo', 'directory': 'forgejo'},
         {'account': 'signoz', 'directory': 'signoz'},
@@ -204,6 +209,75 @@
   notify: Restart secure edge
   tags: [platform, edge, traefik]
 
+- name: Render the CrowdSec Compose definition
+  ansible.builtin.template:
+    src: crowdsec-compose.yml.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/compose.yml"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0600"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
+- name: Render CrowdSec local configuration
+  ansible.builtin.template:
+    src: crowdsec-config.yaml.local.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/config.yaml.local"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
+- name: Render CrowdSec AppSec acquisition configuration
+  ansible.builtin.template:
+    src: crowdsec-appsec-acquis.yaml.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/acquis.d/appsec.yaml"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
+- name: Render CrowdSec AppSec platform configuration
+  ansible.builtin.template:
+    src: crowdsec-appsec-config.yaml.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/appsec-configs/platform-appsec.yaml"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
+- name: Render CrowdSec AppSec rule definition
+  ansible.builtin.template:
+    src: crowdsec-appsec-rule-def.yaml.j2
+    dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/appsec-rules/platform-exclusions.yaml"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
+- name: Render CrowdSec AppSec platform rules and exclusions
+  ansible.builtin.template:
+    src: crowdsec-appsec-rules.conf.j2
+    dest: "{{ item }}"
+    owner: "{{ service_accounts.waf.name }}"
+    group: "{{ service_accounts.waf.name }}"
+    mode: "0644"
+  loop:
+    - "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/data/platform-exclusions.conf"
+    - "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/appsec-rules/platform-exclusions.conf"
+  notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'crowdsec'
+  tags: [platform, waf]
+
 - name: Create an empty WAF fail2ban deny list
   ansible.builtin.copy:
     dest: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/fail2ban-deny.conf"
@@ -213,6 +287,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
     force: false
+  when: waf_provider | default('crowdsec') == 'modsecurity'
   tags: [platform, waf]
 
 - name: Render the WAF Compose definition
@@ -223,6 +298,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0600"
   notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'modsecurity'
   tags: [platform, waf]
 
 - name: Render the WAF nginx template for the unprivileged container user
@@ -233,6 +309,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'modsecurity'
   tags: [platform, waf]
 
 - name: Render CRS exclusions for Forgejo repository file views
@@ -243,6 +320,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
+  when: waf_provider | default('crowdsec') == 'modsecurity'
   tags: [platform, waf]
 
 - name: Render the Authentik stack
@@ -702,6 +780,17 @@
   notify: Restart secure Wazuh
   tags: [platform, wazuh_server, wazuh]
 
+- name: Trust the generated Wazuh CA at the edge proxy boundary
+  ansible.builtin.copy:
+    src: "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.pem"
+    dest: "/var/lib/{{ service_accounts.edge.name }}/stacks/edge/config/wazuh-root-ca.pem"
+    remote_src: true
+    owner: "{{ service_accounts.edge.name }}"
+    group: "{{ service_accounts.edge.name }}"
+    mode: "0644"
+  notify: Restart secure edge
+  tags: [platform, wazuh_server, wazuh, edge]
+
 - name: Trust the generated Wazuh CA at the WAF boundary
   ansible.builtin.copy:
     src: "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.pem"
@@ -711,7 +800,8 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
-  tags: [platform, wazuh_server, wazuh]
+  when: waf_provider | default('crowdsec') == 'modsecurity'
+  tags: [platform, wazuh_server, wazuh, waf]
 
 - name: Replace the Wazuh demo identities for the unprivileged indexer user
   ansible.builtin.template:
@@ -915,22 +1005,79 @@
     timeout: 600
   loop: >-
     {{
-      [
-        {'port': waf_http_port, 'name': 'waf', 'account': 'waf'},
-        {'port': authentik_http_port, 'name': 'authentik', 'account': 'auth'},
-        {'port': forgejo_http_port, 'name': 'forgejo', 'account': 'forgejo'},
-        {'port': signoz_ui_port, 'name': 'signoz', 'account': 'signoz'},
-        {'port': signoz_grpc_port, 'name': 'signoz-otlp-grpc', 'account': 'signoz'},
-        {'port': signoz_http_port, 'name': 'signoz-otlp-http', 'account': 'signoz'},
-        {'port': wazuh_dashboard_port, 'name': 'wazuh', 'account': 'wazuh'},
-        {'port': wazuh_indexer_port, 'name': 'wazuh-indexer', 'account': 'wazuh'},
-        {'port': 15500, 'name': 'wazuh-api', 'account': 'wazuh'},
-        {'port': public_port, 'name': 'traefik', 'account': 'edge'}
-      ] | selectattr('account', 'in', (platform_active_stack_units | map(attribute='account') | list)) | list
+      (
+        ([
+          {'port': crowdsec_lapi_port, 'name': 'crowdsec-lapi', 'account': 'waf'},
+          {'port': crowdsec_appsec_port, 'name': 'crowdsec-appsec', 'account': 'waf'},
+          {'port': crowdsec_web_ui_port, 'name': 'crowdsec-web-ui', 'account': 'waf'}
+        ] if (waf_provider | default('crowdsec') == 'crowdsec') else [
+          {'port': waf_http_port, 'name': 'waf', 'account': 'waf'}
+        ]) +
+        [
+          {'port': authentik_http_port, 'name': 'authentik', 'account': 'auth'},
+          {'port': forgejo_http_port, 'name': 'forgejo', 'account': 'forgejo'},
+          {'port': signoz_ui_port, 'name': 'signoz', 'account': 'signoz'},
+          {'port': signoz_grpc_port, 'name': 'signoz-otlp-grpc', 'account': 'signoz'},
+          {'port': signoz_http_port, 'name': 'signoz-otlp-http', 'account': 'signoz'},
+          {'port': wazuh_dashboard_port, 'name': 'wazuh', 'account': 'wazuh'},
+          {'port': wazuh_indexer_port, 'name': 'wazuh-indexer', 'account': 'wazuh'},
+          {'port': 15500, 'name': 'wazuh-api', 'account': 'wazuh'},
+          {'port': public_port, 'name': 'traefik', 'account': 'edge'}
+        ]
+      ) | selectattr('account', 'in', (platform_active_stack_units | map(attribute='account') | list)) | list
     }}
   loop_control:
     label: "{{ item.name }} :{{ item.port }}"
   tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
+
+- name: Check registered CrowdSec machines
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - crowdsec
+      - cscli
+      - machines
+      - list
+      - -o
+      - json
+  become: true
+  become_user: "{{ service_accounts.waf.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.waf.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.waf.uid }}"
+  register: platform_crowdsec_machines
+  changed_when: false
+  when:
+    - waf_provider | default('crowdsec') == 'crowdsec'
+    - "'waf' in (platform_active_stack_units | map(attribute='account') | list)"
+  tags: [platform, waf]
+
+- name: Register the CrowdSec Web UI machine account
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - crowdsec
+      - cscli
+      - machines
+      - add
+      - crowdsec-web-ui
+      - --password
+      - "{{ crowdsec_web_ui_api_key }}"
+      - -f
+      - /dev/null
+  become: true
+  become_user: "{{ service_accounts.waf.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.waf.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.waf.uid }}"
+  when:
+    - waf_provider | default('crowdsec') == 'crowdsec'
+    - "'waf' in (platform_active_stack_units | map(attribute='account') | list)"
+    - "'crowdsec-web-ui' not in (platform_crowdsec_machines.stdout | default('[]'))"
+  no_log: true
+  tags: [platform, waf]
 
 - name: Wire the Wazuh manager indexer connector
   ansible.builtin.import_tasks: wazuh_indexer.yml

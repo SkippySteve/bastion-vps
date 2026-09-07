@@ -147,11 +147,11 @@
     follow_redirects: none
     status_code: [200, 301, 302, 303, 307, 308, 401, 403]
     timeout: 30
-  loop:
-    - "{{ auth_fqdn }}"
-    - "{{ git_fqdn }}"
-    - "{{ observe_fqdn }}"
-    - "{{ security_fqdn }}"
+  loop: >-
+    {{
+      [auth_fqdn, git_fqdn, observe_fqdn, security_fqdn] +
+      ([crowdsec_fqdn] if (waf_provider | default('crowdsec') == 'crowdsec') else [])
+    }}
   when: verify_public_https | bool
 
 - name: Check whether scrapecast is enabled

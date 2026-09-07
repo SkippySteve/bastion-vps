@@ -4,24 +4,56 @@
 {% set traefik_router_tls = {"certResolver": "letsencrypt"} if (traefik_acme_enabled | default(true) | bool) else {} %}
 {% set traefik_router_observability = {"accessLogs": true, "metrics": true, "tracing": true, "traceVerbosity": "detailed"} %}
 {% set traefik_admin_chain = "admin-chain" if (protect_admin_apps_with_authentik | bool) else "bootstrap-admin-chain" %}
-{% set traefik_outpost_hosts = [observe_fqdn, security_fqdn, traefik_fqdn] %}
+{% set traefik_outpost_hosts = [observe_fqdn, security_fqdn, traefik_fqdn] + ([crowdsec_fqdn] if (waf_provider | default('crowdsec') == 'crowdsec') else []) %}
 http:
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+  serversTransports:
+    wazuh-transport:
+      serverName: wazuh.dashboard
+      rootCAs:
+        - /etc/traefik/wazuh-root-ca.pem
+{% endif %}
+
   routers:
     authentik:
       entryPoints: [websecure]
       rule: "Host(`{{ auth_fqdn }}`)"
-      service: waf
+      service: {{ 'authentik' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
       middlewares: [public-chain]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
     forgejo:
       entryPoints: [websecure]
       rule: "Host(`{{ git_fqdn }}`)"
-      service: waf
+      service: {{ 'forgejo' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
       middlewares: [public-chain]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
 {% if enable_scrapecast | default(true) | bool %}
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+    scrapecast-api:
+      entryPoints: [websecure]
+      rule: "(Host(`{{ app_fqdn }}`) || Host(`{{ app_www_fqdn }}`)) && (PathPrefix(`/api`) || PathPrefix(`/demo`) || PathPrefix(`/rss`))"
+      priority: 20
+      service: scrapecast-api
+      middlewares: [public-chain]
+      tls: {{ traefik_router_tls | to_json }}
+      observability: {{ traefik_router_observability | to_json }}
+    scrapecast:
+      entryPoints: [websecure]
+      rule: "Host(`{{ app_fqdn }}`)"
+      service: scrapecast-web
+      middlewares: [public-chain]
+      tls: {{ traefik_router_tls | to_json }}
+      observability: {{ traefik_router_observability | to_json }}
+    scrapecast-www:
+      entryPoints: [websecure]
+      rule: "Host(`{{ app_www_fqdn }}`)"
+      service: scrapecast-web
+      middlewares: [www-to-apex, public-chain]
+      tls: {{ traefik_router_tls | to_json }}
+      observability: {{ traefik_router_observability | to_json }}
+{% else %}
     scrapecast:
       entryPoints: [websecure]
       rule: "Host(`{{ app_fqdn }}`)"
@@ -37,11 +69,12 @@ http:
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
 {% endif %}
+{% endif %}
     signoz:
       entryPoints: [websecure]
       rule: "Host(`{{ observe_fqdn }}`)"
       priority: 10
-      service: waf
+      service: {{ 'signoz' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
       middlewares: [{{ traefik_admin_chain }}]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
@@ -49,10 +82,20 @@ http:
       entryPoints: [websecure]
       rule: "Host(`{{ security_fqdn }}`)"
       priority: 10
-      service: waf
+      service: {{ 'wazuh' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
       middlewares: [{{ traefik_admin_chain }}]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+    crowdsec:
+      entryPoints: [websecure]
+      rule: "Host(`{{ crowdsec_fqdn }}`)"
+      priority: 10
+      service: crowdsec
+      middlewares: [{{ traefik_admin_chain }}]
+      tls: {{ traefik_router_tls | to_json }}
+      observability: {{ traefik_router_observability | to_json }}
+{% endif %}
 {% if protect_admin_apps_with_authentik | bool %}
     traefik-dashboard:
       entryPoints: [websecure]
@@ -74,11 +117,52 @@ http:
 {% endif %}
 
   services:
+{% if waf_provider | default('crowdsec') == 'modsecurity' %}
     waf:
       loadBalancer:
         passHostHeader: true
         servers:
           - url: "http://127.0.0.1:{{ waf_http_port }}"
+{% else %}
+    authentik:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ authentik_http_port }}"
+    forgejo:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ forgejo_http_port }}"
+    signoz:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ signoz_ui_port }}"
+    wazuh:
+      loadBalancer:
+        serversTransport: wazuh-transport
+        passHostHeader: true
+        servers:
+          - url: "https://127.0.0.1:{{ wazuh_dashboard_port }}"
+    crowdsec:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ crowdsec_web_ui_port }}"
+{% if enable_scrapecast | default(true) | bool %}
+    scrapecast-web:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ scrapecast_web_port }}"
+    scrapecast-api:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ scrapecast_api_port }}"
+{% endif %}
+{% endif %}
     authentik-outpost:
       loadBalancer:
         passHostHeader: true
@@ -86,6 +170,21 @@ http:
           - url: "http://127.0.0.1:{{ authentik_http_port }}"
 
   middlewares:
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+    crowdsec-bouncer:
+      plugin:
+        crowdsec-bouncer:
+          enabled: true
+          crowdsecMode: stream
+          updateIntervalSeconds: 60
+          crowdsecLapiScheme: http
+          crowdsecLapiHost: "127.0.0.1:{{ crowdsec_lapi_port }}"
+          crowdsecLapiKey: "{{ crowdsec_bouncer_api_key }}"
+          crowdsecAppsecEnabled: true
+          crowdsecAppsecHost: "127.0.0.1:{{ crowdsec_appsec_port }}"
+          crowdsecAppsecFailureBlock: false
+          crowdsecAppsecUnreachableBlock: false
+{% endif %}
 {% if enable_scrapecast | default(true) | bool %}
     www-to-apex:
       redirectRegex:
@@ -95,13 +194,33 @@ http:
 {% endif %}
     public-chain:
       chain:
-        middlewares: [security-headers, compress, rate-limit]
+        middlewares:
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+          - crowdsec-bouncer
+{% endif %}
+          - security-headers
+          - compress
+          - rate-limit
     admin-chain:
       chain:
-        middlewares: [authentik-forward, security-headers, compress, rate-limit]
+        middlewares:
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+          - crowdsec-bouncer
+{% endif %}
+          - authentik-forward
+          - security-headers
+          - compress
+          - rate-limit
     bootstrap-admin-chain:
       chain:
-        middlewares: [bootstrap-auth, security-headers, compress, rate-limit]
+        middlewares:
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+          - crowdsec-bouncer
+{% endif %}
+          - bootstrap-auth
+          - security-headers
+          - compress
+          - rate-limit
     bootstrap-auth:
       basicAuth:
         users:

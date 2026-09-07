@@ -13,9 +13,11 @@ receivers:
         endpoint: 127.0.0.1:{{ host_otlp_grpc_port }}
       http:
         endpoint: 127.0.0.1:{{ host_otlp_http_port }}
+{% if waf_provider | default('crowdsec') == 'modsecurity' %}
   nginx:
     endpoint: "http://127.0.0.1:{{ waf_status_port }}/nginx_status"
     collection_interval: 30s
+{% endif %}
   hostmetrics:
     collection_interval: 30s
     scrapers:
@@ -69,6 +71,13 @@ receivers:
           metrics_path: /metrics
           static_configs:
             - targets: ["127.0.0.1:{{ authentik_metrics_port }}"]
+{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+        - job_name: crowdsec
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["127.0.0.1:{{ crowdsec_metrics_port }}"]
+{% endif %}
 
 processors:
   memory_limiter:
@@ -110,7 +119,7 @@ service:
     metrics: {level: none}
   pipelines:
     metrics:
-      receivers: [otlp, hostmetrics, prometheus, nginx]
+      receivers: [otlp, hostmetrics, prometheus{% if waf_provider | default('crowdsec') == 'modsecurity' %}, nginx{% endif %}]
       processors: [memory_limiter, resourcedetection, resource/platform, batch]
       exporters: [otlp/signoz]
     traces:

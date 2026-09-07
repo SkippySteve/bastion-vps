@@ -1,0 +1,12 @@
+---
+source: appsec
+listen_addr: "127.0.0.1:{{ crowdsec_appsec_port }}"
+appsec_configs:
+  - crowdsecurity/appsec-default
+  - crowdsecurity/appsec-virtual-patching
+  - crowdsecurity/appsec-generic-rules
+  - crowdsecurity/appsec-bot-challenge
+  - platform/appsec-config
+labels:
+  type: appsec
+name: platform-appsec

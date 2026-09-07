@@ -1,0 +1,9 @@
+---
+api:
+  server:
+    listen_uri: "127.0.0.1:{{ crowdsec_lapi_port }}"
+prometheus:
+  enabled: true
+  level: full
+  listen_addr: "127.0.0.1"
+  listen_port: {{ crowdsec_metrics_port }}

@@ -1,0 +1,80 @@
+---
+- name: Install integrity and compliance tooling
+  ansible.builtin.apt:
+    name: [aide, openscap-scanner, ssg-debian]
+    state: present
+    update_cache: true
+
+- name: Create security monitoring state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [/var/lib/platform-aide, /var/lib/platform-openscap, /var/lib/vector, /etc/platform-security]
+
+- name: Configure Vector security log collection
+  ansible.builtin.template:
+    src: vector.yaml.j2
+    dest: /etc/platform-security/vector.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart Vector
+
+- name: Install Vector service
+  ansible.builtin.template:
+    src: vector.service.j2
+    dest: /etc/systemd/system/platform-vector.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload security monitoring units
+
+- name: Configure Falco local rules
+  ansible.builtin.template:
+    src: falco-rules.yaml.j2
+    dest: /etc/platform-security/falco-rules.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart Falco
+
+- name: Install Falco service
+  ansible.builtin.template:
+    src: falco.service.j2
+    dest: /etc/systemd/system/platform-falco.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload security monitoring units
+
+- name: Install AIDE and OpenSCAP scan scripts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/libexec/platform-{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: [aide-check, openscap-check]
+
+- name: Install AIDE and OpenSCAP timers
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [platform-aide.service, platform-aide.timer, platform-openscap.service, platform-openscap.timer]
+  notify: Reload security monitoring units
+
+- name: Apply security monitoring unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable security monitoring services and timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [platform-vector.service, platform-falco.service, platform-aide.timer, platform-openscap.timer]

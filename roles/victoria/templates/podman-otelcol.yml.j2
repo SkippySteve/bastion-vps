@@ -1,0 +1,38 @@
+---
+receivers:
+  podman_stats:
+    endpoint: unix:///run/user/{{ item.value.uid }}/podman/podman.sock
+    collection_interval: 30s
+    initial_delay: 5s
+    timeout: 10s
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 128
+    spike_limit_mib: 32
+  resource/stack:
+    attributes:
+      - key: service.namespace
+        value: secure-vps
+        action: upsert
+      - key: podman.account
+        value: "{{ item.value.name }}"
+        action: upsert
+  batch: {}
+
+exporters:
+  prometheusremotewrite/victoriametrics:
+    endpoint: http://127.0.0.1:{{ victoria_metrics_port }}/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  telemetry:
+    logs: {level: warn}
+    metrics: {level: none}
+  pipelines:
+    metrics:
+      receivers: [podman_stats]
+      processors: [memory_limiter, resource/stack, batch]
+      exporters: [prometheusremotewrite/victoriametrics]

@@ -91,7 +91,52 @@ service_accounts:
   wazuh: {name: svc-wazuh, uid: 2105, subid_start: 1327680}
   runner: {name: svc-runner, uid: 2106, subid_start: 1393216}
   scrapecast: {name: svc-scrapecast, uid: 2107, subid_start: 1458752}
+  victoria: {name: svc-victoria, uid: 2108, subid_start: 1524288}
 subid_count: 65536
+
+# New deployments use the low-footprint Victoria stack. The prior combined
+# Wazuh and SigNoz implementation remains selectable for compatibility.
+security_observability_stack: victoria
+legacy_telemetry_purge: false
+legacy_telemetry_purge_confirm: ""
+victoria_metrics_port: 18428
+victoria_logs_port: 19428
+victoria_grafana_port: 13030
+# Tempo is the production default while VictoriaTraces matures. Both expose
+# OTLP only on loopback, so changing backends does not require app changes.
+victoria_trace_backend: tempo
+victoria_reset_container_store: false
+victoria_tempo_port: 13200
+victoria_tempo_otlp_grpc_port: 14327
+victoria_tempo_otlp_http_port: 14328
+victoria_traces_port: 10428
+victoria_traces_otlp_grpc_port: 14327
+victoria_vmagent_port: 18429
+victoria_alertmanager_port: 19093
+victoria_vmalert_port: 18880
+victoria_metrics_retention: 90d
+victoria_logs_retention: 30d
+victoria_logs_max_disk_percent: 80
+victoria_tempo_retention: 336h
+victoria_traces_retention: 14d
+victoria_metrics_image: "docker.io/victoriametrics/victoria-metrics:v1.120.0"
+victoria_logs_image: "docker.io/victoriametrics/victoria-logs:v1.38.0"
+victoria_vmagent_image: "docker.io/victoriametrics/vmagent:v1.120.0"
+victoria_vmalert_image: "docker.io/victoriametrics/vmalert:v1.120.0"
+victoria_alertmanager_image: "docker.io/prom/alertmanager:v0.28.1"
+victoria_grafana_image: "docker.io/grafana/grafana:12.1.0"
+victoria_tempo_image: "docker.io/grafana/tempo:2.8.2"
+victoria_traces_image: "docker.io/victoriametrics/victoria-traces:v0.11.0"
+vector_image: "docker.io/timberio/vector:0.49.0-debian"
+falco_image: "docker.io/falcosecurity/falco:0.41.3"
+falcosidekick_image: "docker.io/falcosecurity/falcosidekick:2.31.0"
+victoria_smtp_enabled: true
+victoria_smtp_smarthost: "smtp.purelymail.com:465"
+victoria_smtp_from: "victoria@aimingupward.com"
+victoria_smtp_to: "steve@aimingupward.com"
+victoria_alert_webhook_url: ""
+aide_schedule: "*-*-* 02:00:00"
+openscap_schedule: "Sun *-*-* 03:00:00"
 wazuh_stack_fim_paths:
   - "/var/lib/{{ service_accounts.edge.name }}/stacks"
   - "/var/lib/{{ service_accounts.waf.name }}/stacks"

@@ -1,0 +1,298 @@
+---
+- name: Validate the selected security and observability stack
+  ansible.builtin.assert:
+    that:
+      - security_observability_stack in ['victoria', 'legacy_wazuh_signoz']
+      - victoria_trace_backend in ['tempo', 'victortraces']
+      - victoria_grafana_admin_password | default('') | length > 0
+    fail_msg: Select a supported observability stack and trace backend.
+
+- name: Install Victoria host dependencies
+  ansible.builtin.apt:
+    name: [prometheus-node-exporter]
+    state: present
+
+- name: Download the pinned OpenTelemetry Collector Contrib package
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otelcol_version
+      }}/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb
+    dest: "/usr/local/src/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb"
+    checksum: "sha256:{{ artifact_checksums.otelcol_deb[preflight_platform_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the OpenTelemetry Collector Contrib
+  ansible.builtin.apt:
+    deb: "/usr/local/src/otelcol-contrib_{{ otelcol_version }}_linux_{{ preflight_platform_arch }}.deb"
+    state: present
+
+- name: Grant the host collector read-only journal access
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups: systemd-journal
+    append: true
+
+- name: Create durable host collector cursor storage
+  ansible.builtin.file:
+    path: /var/lib/otelcol-contrib/storage
+    state: directory
+    owner: otelcol-contrib
+    group: otelcol-contrib
+    mode: "0750"
+
+# A targeted --tags victoria run may skip the base role, so establish the
+# rootless account and mappings here as well as in the normal base bootstrap.
+- name: Create the Victoria rootless service account
+  ansible.builtin.user:
+    name: "{{ service_accounts.victoria.name }}"
+    uid: "{{ service_accounts.victoria.uid }}"
+    home: "/var/lib/{{ service_accounts.victoria.name }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+    password_lock: true
+    groups: ""
+    system: true
+
+- name: Allocate the Victoria subordinate UID and GID ranges
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ service_accounts.victoria.name }}:"
+    line: "{{ service_accounts.victoria.name }}:{{ service_accounts.victoria.subid_start }}:{{ subid_count }}"
+    create: true
+    mode: "0644"
+  loop: [subuid, subgid]
+
+- name: Repair ownership of the Victoria service home
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.victoria.name }}"
+    state: directory
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0700"
+
+# Only use this after a failed first deployment. The rootless image store has
+# per-container UID mappings, so recursive chown would corrupt its layers.
+- name: Stop Victoria before resetting its rootless container store
+  ansible.builtin.systemd_service:
+    name: secure-victoria.service
+    state: stopped
+  failed_when: false
+  when: victoria_reset_container_store | bool
+
+- name: Remove the explicitly reset Victoria rootless container store
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.victoria.name }}/.local/share/containers"
+    state: absent
+  when: victoria_reset_container_store | bool
+
+- name: Create private Victoria account directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.victoria.name }}/{{ item }}"
+    state: directory
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0700"
+  loop: [stacks, .config, .config/containers]
+
+- name: Enable the Victoria rootless user manager
+  ansible.builtin.command: "loginctl enable-linger {{ service_accounts.victoria.name }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ service_accounts.victoria.name }}"
+
+- name: Create Victoria stack directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/{{ item }}"
+    state: directory
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0700"
+  loop: [config, data, grafana]
+
+- name: Render the rootless Victoria Compose stack
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/compose.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0600"
+  notify: Restart Victoria stack
+
+- name: Install the Victoria stack unit
+  ansible.builtin.template:
+    src: victoria.service.j2
+    dest: /etc/systemd/system/secure-victoria.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Victoria units
+
+- name: Configure Victoria alerting rules
+  ansible.builtin.template:
+    src: alerts.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/alerts.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  notify: Restart Victoria stack
+
+- name: Configure vmagent scrape targets
+  ansible.builtin.template:
+    src: vmagent.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/vmagent.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  notify: Restart Victoria stack
+
+- name: Configure Alertmanager receivers
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/alertmanager.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  no_log: true
+  notify: Restart Victoria stack
+
+- name: Configure Tempo when it is the selected trace backend
+  ansible.builtin.template:
+    src: tempo.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/tempo.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  when: victoria_trace_backend == 'tempo'
+  notify: Restart Victoria stack
+
+- name: Provision Grafana Victoria datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/grafana-datasources.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  notify: Restart Victoria stack
+
+- name: Configure host OTLP ingest and Victoria exports
+  ansible.builtin.template:
+    src: host-otelcol.yml.j2
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  notify: Restart Victoria host OpenTelemetry collector
+
+- name: Create Podman collector configuration directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ item.value.name }}/.config"
+    state: directory
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0700"
+  loop: "{{ service_accounts | dict2items }}"
+
+- name: Configure per-account Podman metrics exports to VictoriaMetrics
+  ansible.builtin.template:
+    src: podman-otelcol.yml.j2
+    dest: "/var/lib/{{ item.value.name }}/.config/otelcol-podman.yml"
+    owner: "{{ item.value.name }}"
+    group: "{{ item.value.name }}"
+    mode: "0600"
+  loop: "{{ service_accounts | dict2items }}"
+  notify: Restart Victoria Podman OpenTelemetry collectors
+
+- name: Install per-account Podman metrics collector units
+  ansible.builtin.template:
+    src: otelcol-podman.service.j2
+    dest: "/etc/systemd/system/otelcol-podman-{{ item.value.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ service_accounts | dict2items }}"
+  notify:
+    - Reload Victoria units
+    - Restart Victoria Podman OpenTelemetry collectors
+
+- name: Validate the Victoria host collector configuration
+  ansible.builtin.command: /usr/bin/otelcol-contrib validate --config=/etc/otelcol-contrib/config.yaml
+  changed_when: false
+
+- name: Flush Victoria unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the Victoria stack
+  ansible.builtin.systemd_service:
+    name: secure-victoria.service
+    enabled: true
+    state: started
+
+- name: Enable the Victoria host OpenTelemetry collector
+  ansible.builtin.systemd_service:
+    name: otelcol-contrib.service
+    enabled: true
+    state: started
+
+- name: Enable per-account Podman metrics collectors
+  ansible.builtin.systemd_service:
+    name: "otelcol-podman-{{ item.value.name }}.service"
+    enabled: true
+    state: started
+  loop: "{{ service_accounts | dict2items }}"
+  failed_when: false
+
+- name: Wait for Grafana to accept local connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ victoria_grafana_port }}"
+    timeout: 120
+
+# GF_SECURITY_ADMIN_PASSWORD is applied only while Grafana creates its DB.
+# Reset it explicitly so the encrypted vault remains the source of truth.
+- name: Synchronize the Grafana admin password from the vault
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - victoria_grafana_1
+      - grafana
+      - cli
+      - admin
+      - reset-admin-password
+      - "{{ victoria_grafana_admin_password }}"
+  become: true
+  become_user: "{{ service_accounts.victoria.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.victoria.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.victoria.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.victoria.uid }}/bus"
+  no_log: true
+  changed_when: false
+
+- name: Guard legacy telemetry purge
+  ansible.builtin.assert:
+    that:
+      - security_observability_stack == 'victoria'
+      - legacy_telemetry_purge_confirm == 'DELETE-WAZUH-SIGNOZ'
+    fail_msg: Legacy purge requires the Victoria profile and DELETE-WAZUH-SIGNOZ confirmation.
+  when: legacy_telemetry_purge | bool
+
+- name: Stop legacy telemetry units before purge
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: [secure-signoz.service, secure-wazuh.service, wazuh-agent.service]
+  failed_when: false
+  when: legacy_telemetry_purge | bool
+
+- name: Remove legacy telemetry state after explicit confirmation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz"
+    - "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh"
+    - /etc/platform-wazuh
+  when: legacy_telemetry_purge | bool

@@ -1,0 +1,53 @@
+---
+services:
+  victoriametrics:
+    image: {{ victoria_metrics_image }}
+    command: [-retentionPeriod={{ victoria_metrics_retention }}, -storageDataPath=/data]
+    volumes: [victoria-metrics:/data]
+    ports: ["127.0.0.1:{{ victoria_metrics_port }}:8428"]
+  victorialogs:
+    image: {{ victoria_logs_image }}
+    command: [-retentionPeriod={{ victoria_logs_retention }}, -retention.maxDiskUsagePercent={{ victoria_logs_max_disk_percent }}, -storageDataPath=/data]
+    volumes: [victoria-logs:/data]
+    ports: ["127.0.0.1:{{ victoria_logs_port }}:9428"]
+  vmagent:
+    image: {{ victoria_vmagent_image }}
+    command: [-promscrape.config=/etc/vmagent.yml, -remoteWrite.url=http://victoriametrics:8428/api/v1/write]
+    volumes: [./config/vmagent.yml:/etc/vmagent.yml:ro]
+    ports: ["127.0.0.1:{{ victoria_vmagent_port }}:8429"]
+{% if victoria_trace_backend == 'tempo' %}
+  tempo:
+    image: {{ victoria_tempo_image }}
+    command: [-config.file=/etc/tempo.yml]
+    volumes: [tempo:/var/tempo, ./config/tempo.yml:/etc/tempo.yml:ro]
+    ports: ["127.0.0.1:{{ victoria_tempo_port }}:3200", "127.0.0.1:{{ victoria_tempo_otlp_grpc_port }}:4317", "127.0.0.1:{{ victoria_tempo_otlp_http_port }}:4318"]
+{% else %}
+  victoriatraces:
+    image: {{ victoria_traces_image }}
+    command: [-storageDataPath=/data, -retentionPeriod={{ victoria_traces_retention }}, -otlpGRPCListenAddr=:4317, -otlpGRPC.tls=false]
+    volumes: [victoria-traces:/data]
+    ports: ["127.0.0.1:{{ victoria_traces_port }}:10428", "127.0.0.1:{{ victoria_traces_otlp_grpc_port }}:4317"]
+{% endif %}
+  alertmanager:
+    image: {{ victoria_alertmanager_image }}
+    command: [--config.file=/etc/alertmanager.yml, --storage.path=/alertmanager]
+    volumes: [alertmanager:/alertmanager, ./config/alertmanager.yml:/etc/alertmanager.yml:ro]
+    ports: ["127.0.0.1:{{ victoria_alertmanager_port }}:9093"]
+  vmalert:
+    image: {{ victoria_vmalert_image }}
+    command: [-rule=/etc/alerts.yml, -datasource.url=http://victoriametrics:8428, -notifier.url=http://alertmanager:9093, -remoteWrite.url=http://victoriametrics:8428, -remoteRead.url=http://victoriametrics:8428]
+    volumes: [./config/alerts.yml:/etc/alerts.yml:ro]
+    ports: ["127.0.0.1:{{ victoria_vmalert_port }}:8880"]
+  grafana:
+    image: {{ victoria_grafana_image }}
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: {{ victoria_grafana_admin_password | default('change-me-before-deploy') | to_json }}
+    volumes: [grafana:/var/lib/grafana, ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/victoria.yml:ro]
+    ports: ["127.0.0.1:{{ victoria_grafana_port }}:3000"]
+volumes:
+  victoria-metrics: {}
+  victoria-logs: {}
+  tempo: {}
+  victoria-traces: {}
+  alertmanager: {}
+  grafana: {}

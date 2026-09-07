@@ -1,0 +1,24 @@
+global:
+  resolve_timeout: 5m
+route:
+  receiver: default
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+receivers:
+  - name: default
+{% if victoria_smtp_enabled | bool %}
+    email_configs:
+      - to: {{ victoria_smtp_to | to_json }}
+        from: {{ victoria_smtp_from | to_json }}
+        smarthost: {{ victoria_smtp_smarthost | to_json }}
+{% if victoria_smtp_username | length > 0 %}
+        auth_username: {{ victoria_smtp_username | to_json }}
+        auth_password: {{ victoria_smtp_password | to_json }}
+{% endif %}
+{% endif %}
+{% if victoria_alert_webhook_url | length > 0 %}
+    webhook_configs:
+      - url: {{ victoria_alert_webhook_url | to_json }}
+{% endif %}

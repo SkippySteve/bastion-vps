@@ -1,0 +1,11 @@
+[Unit]
+Description=Platform Vector security log collector
+After=network-online.target
+[Service]
+ExecStartPre=-/usr/bin/podman rm -f platform-vector
+ExecStart=/usr/bin/podman run --name platform-vector --rm --network host --volume /etc/platform-security/vector.yaml:/etc/vector/vector.yaml:ro --volume /var/log:/var/log:ro --volume /run/log/journal:/run/log/journal:ro --volume /var/lib/vector:/var/lib/vector {{ vector_image }}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target

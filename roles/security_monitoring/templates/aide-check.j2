@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+mkdir -p /var/lib/platform-aide
+if [ ! -f /var/lib/platform-aide/aide.db ]; then
+  aideinit
+  cp /var/lib/aide/aide.db.new /var/lib/platform-aide/aide.db
+fi
+aide --check --config /etc/aide/aide.conf | tee /var/lib/platform-aide/latest.log

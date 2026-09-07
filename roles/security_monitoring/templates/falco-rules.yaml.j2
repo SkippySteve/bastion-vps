@@ -1,0 +1,10 @@
+- rule: Platform Shell in Container
+  desc: Detect interactive shells launched in containers
+  condition: container and spawned_process and proc.name in (sh, bash, zsh)
+  output: "platform shell in container user=%user.name command=%proc.cmdline container=%container.name"
+  priority: WARNING
+- rule: Platform Sensitive File Write
+  desc: Detect writes to authentication and service configuration
+  condition: open_write and fd.name startswith (/etc/) and proc.name in (curl, wget, python, python3, sh, bash)
+  output: "platform sensitive file write user=%user.name file=%fd.name command=%proc.cmdline"
+  priority: WARNING

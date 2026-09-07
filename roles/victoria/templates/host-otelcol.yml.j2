@@ -1,0 +1,99 @@
+---
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-contrib/storage
+    create_directory: true
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:{{ host_otlp_grpc_port }}
+      http:
+        endpoint: 127.0.0.1:{{ host_otlp_http_port }}
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      disk: {}
+      filesystem:
+        exclude_mount_points:
+          mount_points: [/dev/*, /proc/*, /sys/*, /run/user/*]
+          match_type: regexp
+      load: {}
+      memory: {}
+      network: {}
+      paging: {}
+      processes: {}
+  journald/operations:
+    directory: /var/log/journal
+    start_at: end
+    priority: info
+    storage: file_storage
+    all: true
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 512
+    spike_limit_mib: 128
+  resourcedetection:
+    detectors: [system, env]
+    timeout: 5s
+    override: false
+  resource/platform:
+    attributes:
+      - key: deployment.environment.name
+        value: production
+        action: upsert
+      - key: service.namespace
+        value: secure-vps
+        action: upsert
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  transform/logs:
+    log_statements:
+      - context: log
+        statements:
+          - set(body, attributes["MESSAGE"]) where attributes["MESSAGE"] != nil
+          - set(body, attributes["message"]) where attributes["message"] != nil
+
+exporters:
+  prometheusremotewrite/victoriametrics:
+    endpoint: http://127.0.0.1:{{ victoria_metrics_port }}/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
+  otlp/traces:
+    endpoint: 127.0.0.1:{{ victoria_tempo_otlp_grpc_port if victoria_trace_backend == 'tempo' else victoria_traces_otlp_grpc_port }}
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+  otlphttp/victorialogs:
+    logs_endpoint: http://127.0.0.1:{{ victoria_logs_port }}/insert/opentelemetry/v1/logs
+    sending_queue:
+      enabled: true
+      storage: file_storage
+
+service:
+  extensions: [file_storage, health_check]
+  telemetry:
+    logs: {level: info}
+    metrics: {level: none}
+  pipelines:
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [memory_limiter, resourcedetection, resource/platform, batch]
+      exporters: [prometheusremotewrite/victoriametrics]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource/platform, batch]
+      exporters: [otlp/traces]
+    logs:
+      receivers: [otlp, journald/operations]
+      processors: [memory_limiter, resourcedetection, resource/platform, transform/logs, batch]
+      exporters: [otlphttp/victorialogs]

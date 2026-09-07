@@ -121,6 +121,7 @@ forgejo_secret_key="$(rand_base64_token)"
 forgejo_internal_token="$(rand_base64_token)"
 authentik_bootstrap_password="$(rand_app_password)"
 forgejo_admin_password="$(rand_app_password)"
+victoria_grafana_admin_password="$(rand_app_password)"
 vault_crowdsec_bouncer_api_key="$(rand_hex_32)"
 vault_crowdsec_web_ui_api_key="$(rand_hex_32)"
 
@@ -175,6 +176,12 @@ forgejo_admin_email: $(yaml_quote "$forgejo_admin_email")
 
 signoz_postgresql_password: $(yaml_quote "$signoz_postgresql_password")
 
+# Victoria Alertmanager SMTP authentication is provider-issued. Add these
+# after generating an SMTP app password, if victoria_smtp_enabled is true.
+# victoria_smtp_username: ''
+# victoria_smtp_password: ''
+victoria_grafana_admin_password: $(yaml_quote "$victoria_grafana_admin_password")
+
 scrapecast_db_password: $(yaml_quote "$scrapecast_db_password")
 scrapecast_secrets_encryption_key: $(yaml_quote "$scrapecast_secrets_encryption_key")
 # Packages:read token for svc-scrapecast. Create it in Forgejo after the
@@ -219,6 +226,7 @@ Save these generated application passwords (not stored elsewhere):
 
   authentik_bootstrap_password: ${authentik_bootstrap_password}
   forgejo_admin_password:       ${forgejo_admin_password}
+  victoria_grafana_admin_password: ${victoria_grafana_admin_password}
   wazuh_indexer_admin_password: ${wazuh_indexer_admin_password}
   wazuh_dashboard_service_password: ${wazuh_dashboard_service_password}
   wazuh_api_password:           ${wazuh_api_password}

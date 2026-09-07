@@ -1,0 +1,21 @@
+[Unit]
+Description=Victoria observability stack
+After=network-online.target user@{{ service_accounts.victoria.uid }}.service
+Wants=network-online.target
+Requires=user@{{ service_accounts.victoria.uid }}.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User={{ service_accounts.victoria.name }}
+Group={{ service_accounts.victoria.name }}
+WorkingDirectory=/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria
+Environment=HOME=/var/lib/{{ service_accounts.victoria.name }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.victoria.uid }}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ service_accounts.victoria.uid }}/bus
+ExecStart=/usr/bin/podman-compose -f compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/podman-compose -f compose.yml down
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

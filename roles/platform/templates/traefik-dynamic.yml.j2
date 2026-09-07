@@ -6,7 +6,7 @@
 {% set traefik_admin_chain = "admin-chain" if (protect_admin_apps_with_authentik | bool) else "bootstrap-admin-chain" %}
 {% set traefik_outpost_hosts = [observe_fqdn, security_fqdn, traefik_fqdn] + ([crowdsec_fqdn] if (waf_provider | default('crowdsec') == 'crowdsec') else []) %}
 http:
-{% if waf_provider | default('crowdsec') == 'crowdsec' %}
+{% if waf_provider | default('crowdsec') == 'crowdsec' and security_observability_stack == 'legacy_wazuh_signoz' %}
   serversTransports:
     wazuh-transport:
       serverName: wazuh.dashboard
@@ -70,20 +70,20 @@ http:
       observability: {{ traefik_router_observability | to_json }}
 {% endif %}
 {% endif %}
-    signoz:
+    observe:
       entryPoints: [websecure]
       rule: "Host(`{{ observe_fqdn }}`)"
       priority: 10
-      service: {{ 'signoz' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
+      service: {{ ('signoz' if security_observability_stack == 'legacy_wazuh_signoz' else 'victoria') if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
       middlewares: [{{ traefik_admin_chain }}]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
-    wazuh:
+    security:
       entryPoints: [websecure]
       rule: "Host(`{{ security_fqdn }}`)"
       priority: 10
-      service: {{ 'wazuh' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf' }}
-      middlewares: [{{ traefik_admin_chain }}]
+      service: {{ 'wazuh' if security_observability_stack == 'legacy_wazuh_signoz' else ('victoria' if (waf_provider | default('crowdsec') == 'crowdsec') else 'waf') }}
+      middlewares: [{{ traefik_admin_chain }}{% if security_observability_stack == 'victoria' %}, security-dashboard-redirect{% endif %}]
       tls: {{ traefik_router_tls | to_json }}
       observability: {{ traefik_router_observability | to_json }}
 {% if waf_provider | default('crowdsec') == 'crowdsec' %}
@@ -139,9 +139,16 @@ http:
         passHostHeader: true
         servers:
           - url: "http://127.0.0.1:{{ signoz_ui_port }}"
+    victoria:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://127.0.0.1:{{ victoria_grafana_port }}"
     wazuh:
       loadBalancer:
+{% if security_observability_stack == 'legacy_wazuh_signoz' %}
         serversTransport: wazuh-transport
+{% endif %}
         passHostHeader: true
         servers:
           - url: "https://127.0.0.1:{{ wazuh_dashboard_port }}"
@@ -170,6 +177,11 @@ http:
           - url: "http://127.0.0.1:{{ authentik_http_port }}"
 
   middlewares:
+    security-dashboard-redirect:
+      redirectRegex:
+        regex: '^https?://{{ security_fqdn | regex_escape }}/?$'
+        replacement: "https://{{ observe_fqdn }}/d/platform-security"
+        permanent: true
 {% if waf_provider | default('crowdsec') == 'crowdsec' %}
     crowdsec-bouncer:
       plugin:

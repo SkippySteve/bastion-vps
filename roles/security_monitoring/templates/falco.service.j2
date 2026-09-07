@@ -1,0 +1,10 @@
+[Unit]
+Description=Platform Falco eBPF runtime detector
+After=network-online.target
+[Service]
+ExecStartPre=-/usr/bin/podman rm -f platform-falco
+ExecStart=/usr/bin/podman run --name platform-falco --rm --privileged --network host --pid host --volume /var/run/docker.sock:/host/var/run/docker.sock:ro --volume /proc:/host/proc:ro --volume /etc/platform-security/falco-rules.yaml:/etc/falco/falco_rules.local.yaml:ro {{ falco_image }} /usr/bin/falco --modern-bpf -r /etc/falco/falco_rules.local.yaml -o json_output=true -o http_output.enabled=true -o http_output.url=http://127.0.0.1:{{ victoria_logs_port }}/insert/jsonline
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

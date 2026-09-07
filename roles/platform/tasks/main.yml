@@ -36,7 +36,7 @@
   ansible.builtin.set_fact:
     platform_active_stack_units: >-
       {{
-        platform_rootless_stack_units
+        (platform_rootless_stack_units if security_observability_stack == 'legacy_wazuh_signoz' else (platform_rootless_stack_units | rejectattr('account', 'in', ['signoz', 'wazuh']) | list))
         if (
           ansible_run_tags is not defined or
           'all' in ansible_run_tags or
@@ -57,6 +57,7 @@
   ansible.builtin.set_fact:
     platform_signoz_services: "{{ (platform_rootless_stack_units | selectattr('name', 'equalto', 'secure-signoz') | first).compose_services }}"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Create application stack directories
   ansible.builtin.file:
@@ -353,6 +354,7 @@
     group: root
     mode: "0755"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Ensure the local source cache exists
   ansible.builtin.file:
@@ -362,9 +364,11 @@
     group: root
     mode: "0755"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Create a swap file on undersized hosts
   when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
     - allow_undersized_host | bool
     - (undersized_swap_mb | int) > 0
     - (ansible_swaptotal_mb | int) < 1024
@@ -423,6 +427,7 @@
     group: "{{ service_accounts.signoz.name }}"
     mode: "0755"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Download histogram-quantile for ClickHouse user scripts
   ansible.builtin.get_url:
@@ -433,6 +438,7 @@
     group: root
     mode: "0644"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Unpack histogram-quantile
   ansible.builtin.unarchive:
@@ -442,6 +448,7 @@
     extra_opts: [--no-same-owner]
     creates: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/user-scripts/histogram-quantile"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Install histogramQuantile for the Foundry user-scripts volume
   ansible.builtin.copy:
@@ -452,6 +459,7 @@
     group: "{{ service_accounts.signoz.name }}"
     mode: "0755"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Download the pinned SigNoz Foundry release
   ansible.builtin.get_url:
@@ -462,6 +470,7 @@
     group: root
     mode: "0644"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Unpack the pinned Foundry release
   ansible.builtin.unarchive:
@@ -471,6 +480,7 @@
     extra_opts: [--strip-components=2, --no-same-owner]
     creates: "/opt/foundry/{{ foundry_version }}/foundryctl"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Link the Foundry CLI into the system path
   ansible.builtin.file:
@@ -479,6 +489,7 @@
     state: link
     force: true
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Render the pinned SigNoz casting
   ansible.builtin.template:
@@ -490,18 +501,22 @@
   no_log: true
   register: platform_signoz_casting
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Check for a previously forged SigNoz deployment
   ansible.builtin.stat:
     path: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/pours/deployment/compose.yaml"
   register: platform_signoz_compose
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Read the previously forged SigNoz Compose
   ansible.builtin.slurp:
     src: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/pours/deployment/compose.yaml"
   register: platform_signoz_compose_raw
-  when: platform_signoz_compose.stat.exists
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_signoz_compose.stat.exists)
   tags: [platform, signoz]
 
 - name: List SigNoz Podman volumes
@@ -520,6 +535,7 @@
   changed_when: false
   failed_when: false
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Decide whether ClickHouse data must be rebuilt for one replica
   ansible.builtin.set_fact:
@@ -540,12 +556,15 @@
         or ('signoz-telemetrystore-0-1-data' in (platform_signoz_volumes.stdout_lines | default([])))
       }}
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Stop SigNoz before dropping the extra ClickHouse replica
   ansible.builtin.systemd_service:
     name: secure-signoz.service
     state: stopped
-  when: platform_signoz_rebuild_store | bool
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_signoz_rebuild_store | bool)
   failed_when: false
   tags: [platform, signoz]
 
@@ -566,7 +585,9 @@
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
   register: platform_signoz_volume_rm
   changed_when: true
-  when: platform_signoz_rebuild_store | bool
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_signoz_rebuild_store | bool)
   notify: Restart secure SigNoz
   tags: [platform, signoz]
 
@@ -586,10 +607,12 @@
   environment:
     HOME: "/var/lib/{{ service_accounts.signoz.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
-  when: >-
-    platform_signoz_casting.changed
-    or not platform_signoz_compose.stat.exists
-    or (platform_signoz_rebuild_store | bool)
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - >-
+      platform_signoz_casting.changed
+      or not platform_signoz_compose.stat.exists
+      or (platform_signoz_rebuild_store | bool)
   changed_when: true
   notify: Restart secure SigNoz
   tags: [platform, signoz]
@@ -601,11 +624,13 @@
     replace: 'service_started'
   notify: Restart secure SigNoz
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Remember the Wazuh stack directory
   ansible.builtin.set_fact:
     wazuh_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Clone the exact Wazuh container configuration revision
   ansible.builtin.git:
@@ -617,18 +642,22 @@
   become: true
   become_user: "{{ service_accounts.wazuh.name }}"
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Check for a previously rendered Wazuh Compose
   ansible.builtin.stat:
     path: "{{ wazuh_stack_dir }}/compose.secure.yml"
   register: platform_wazuh_compose
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Read any previously rendered Wazuh Compose
   ansible.builtin.slurp:
     src: "{{ wazuh_stack_dir }}/compose.secure.yml"
   register: platform_wazuh_compose_raw
-  when: platform_wazuh_compose.stat.exists
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_wazuh_compose.stat.exists)
   tags: [platform, wazuh_server, wazuh]
 
 - name: Check for a successful Wazuh 5 volume seed
@@ -636,6 +665,7 @@
     path: "{{ wazuh_stack_dir }}/.wazuh5-seeded"
   register: platform_wazuh_seeded
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Decide whether Wazuh volumes must be discarded
   ansible.builtin.set_fact:
@@ -649,12 +679,15 @@
         )
       }}
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Stop Wazuh before dropping volumes
   ansible.builtin.systemd_service:
     name: secure-wazuh.service
     state: stopped
-  when: platform_wazuh_reset_store | bool
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_wazuh_reset_store | bool)
   failed_when: false
   tags: [platform, wazuh_server, wazuh]
 
@@ -672,7 +705,9 @@
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
   register: platform_wazuh_volumes
   changed_when: false
-  when: platform_wazuh_reset_store | bool
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (platform_wazuh_reset_store | bool)
   tags: [platform, wazuh_server, wazuh]
 
 - name: Discard Wazuh volumes that cannot seed under Podman
@@ -684,6 +719,7 @@
     HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
   when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
     - platform_wazuh_reset_store | bool
     - platform_wazuh_volumes.stdout_lines | length > 0
   changed_when: true
@@ -704,6 +740,7 @@
     - "{{ wazuh_stack_dir }}/config/wazuh_manager/rules"
     - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs"
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Install the Wazuh 5 certificate generator
   ansible.builtin.template:
@@ -713,9 +750,12 @@
     group: "{{ service_accounts.wazuh.name }}"
     mode: "0700"
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Back up and remove dependent Wazuh certificates for explicit rotation
-  when: wazuh_rotate_certificates | bool
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - (wazuh_rotate_certificates | bool)
   tags: [platform, wazuh_server, wazuh]
   block:
     - name: Archive existing Wazuh certificates before rotation
@@ -758,6 +798,7 @@
   environment:
     HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Find Wazuh PEM files that containers bind-mount
   ansible.builtin.find:
@@ -769,6 +810,7 @@
     patterns: "*.pem"
   register: platform_wazuh_pems
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Apply least-privilege permissions to Wazuh certificates and private keys
   ansible.builtin.file:
@@ -779,6 +821,7 @@
     label: "{{ item.path }}"
   notify: Restart secure Wazuh
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Trust the generated Wazuh CA at the edge proxy boundary
   ansible.builtin.copy:
@@ -790,6 +833,7 @@
     mode: "0644"
   notify: Restart secure edge
   tags: [platform, wazuh_server, wazuh, edge]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Trust the generated Wazuh CA at the WAF boundary
   ansible.builtin.copy:
@@ -800,7 +844,9 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
-  when: waf_provider | default('crowdsec') == 'modsecurity'
+  when:
+    - security_observability_stack == 'legacy_wazuh_signoz'
+    - waf_provider | default('crowdsec') == 'modsecurity'
   tags: [platform, wazuh_server, wazuh, waf]
 
 - name: Replace the Wazuh demo identities for the unprivileged indexer user
@@ -813,6 +859,7 @@
   no_log: true
   notify: Restart secure Wazuh
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Render the loopback-only Wazuh Compose definition
   ansible.builtin.template:
@@ -824,6 +871,7 @@
   no_log: true
   notify: Restart secure Wazuh
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Remember that Wazuh 5 volumes were prepared for Podman
   ansible.builtin.file:
@@ -834,6 +882,7 @@
     mode: "0644"
   changed_when: false
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Install root-managed wrappers for the rootless Compose stacks
   ansible.builtin.template:
@@ -865,6 +914,23 @@
     name: secure-signoz.service
     enabled: true
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
+
+# Rootless Podman processes run as locked service accounts.  The public CA
+# bundle contains no secret material, so it and its parent directories must be
+# traversable or image pulls from TLS registries fail before authentication.
+- name: Permit rootless Podman processes to read the system CA bundle
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: "{{ item.state }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/ssl, state: directory, mode: "0755"}
+    - {path: /etc/ssl/certs, state: directory, mode: "0755"}
+    - {path: /etc/ssl/certs/ca-certificates.crt, state: file, mode: "0644"}
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, victoria]
 
 - name: Pull the Authentik image into the svc-auth store
   ansible.builtin.command:
@@ -915,6 +981,7 @@
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.signoz.uid }}/bus"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Start existing SigNoz containers
   ansible.builtin.command:
@@ -928,6 +995,7 @@
     HOME: "/var/lib/{{ service_accounts.signoz.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Mark the SigNoz unit started
   ansible.builtin.systemd_service:
@@ -935,6 +1003,7 @@
     state: started
     no_block: true
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Wait until ClickHouse answers queries
   ansible.builtin.command:
@@ -956,6 +1025,7 @@
   delay: 5
   until: platform_signoz_ch_ping.rc == 0
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Run the SigNoz ClickHouse migrator
   ansible.builtin.command:
@@ -975,6 +1045,7 @@
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.signoz.uid }}/bus"
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Wait until SigNoz ClickHouse tables exist
   ansible.builtin.command:
@@ -996,6 +1067,7 @@
   delay: 10
   until: platform_signoz_tbl.rc == 0
   tags: [platform, signoz]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Wait for primary loopback services
   ansible.builtin.wait_for:
@@ -1093,10 +1165,12 @@
 - name: Wire the Wazuh manager indexer connector
   ansible.builtin.import_tasks: wazuh_indexer.yml
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Replace the default Wazuh server API password
   ansible.builtin.import_tasks: wazuh_api.yml
   tags: [platform, wazuh_server, wazuh]
+  when: security_observability_stack == 'legacy_wazuh_signoz'
 
 - name: Configure the embedded Authentik outpost
   ansible.builtin.import_tasks: authentik_outpost.yml

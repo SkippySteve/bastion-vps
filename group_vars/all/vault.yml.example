@@ -27,6 +27,15 @@ forgejo_admin_email: "CHANGE_ME@example.com"
 
 signoz_postgresql_password: "CHANGE_ME_ALPHANUMERIC"
 
+# Victoria Alertmanager SMTP credentials. Set the public sender, recipient,
+# and smarthost in main.yml; keep authentication material in this vault.
+victoria_smtp_username: "CHANGE_ME_SMTP_USERNAME"
+victoria_smtp_password: "CHANGE_ME_SMTP_PASSWORD_OR_APP_KEY"
+
+# Grafana is exposed only through the existing Authentik-protected route, but
+# keep its local administrator account out of the cleartext inventory.
+victoria_grafana_admin_password: "CHANGE_ME_LONG_RANDOM_PASSWORD"
+
 scrapecast_db_password: "CHANGE_ME_ALPHANUMERIC"
 # 32-byte key, base64-encoded. Required to store per-user scrapecast secrets.
 scrapecast_secrets_encryption_key: "CHANGE_ME_BASE64"

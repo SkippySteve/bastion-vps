@@ -106,6 +106,12 @@
         - {src: ../roles/platform/templates/wazuh-internal-users.yml.j2, dest: wazuh-internal-users.yml}
         - {src: ../roles/platform/templates/wazuh-certs.sh.j2, dest: wazuh-certs.sh}
         - {src: ../roles/telemetry/templates/host-otelcol.yml.j2, dest: host-otelcol.yml}
+        - {src: ../roles/victoria/templates/compose.yml.j2, dest: victoria-compose.yml}
+        - {src: ../roles/victoria/templates/vmagent.yml.j2, dest: vmagent.yml}
+        - {src: ../roles/victoria/templates/tempo.yml.j2, dest: tempo.yml}
+        - {src: ../roles/victoria/templates/grafana-datasources.yml.j2, dest: grafana-datasources.yml}
+        - {src: ../roles/victoria/templates/host-otelcol.yml.j2, dest: victoria-host-otelcol.yml}
+        - {src: ../roles/security_monitoring/templates/vector.yaml.j2, dest: vector.yaml}
         - {src: ../roles/sensors/templates/suricata-platform.service.j2, dest: suricata.service}
         - {src: ../roles/sensors/templates/suricata-platform.yaml.j2, dest: suricata-platform.yaml}
         - {src: ../roles/sensors/templates/zeek@.service.j2, dest: zeek.service}
@@ -185,13 +191,13 @@
           - traefik_lab_dynamic.http.routers.authentik.observability.accessLogs | bool
           - traefik_lab_dynamic.http.routers.authentik.service == "authentik"
           - traefik_lab_dynamic.http.routers.forgejo.service == "forgejo"
-          - traefik_lab_dynamic.http.routers.signoz.service == "signoz"
-          - traefik_lab_dynamic.http.routers.wazuh.service == "wazuh"
+          - traefik_lab_dynamic.http.routers.observe.service == "victoria"
+          - traefik_lab_dynamic.http.routers.security.service == "victoria"
           - traefik_lab_dynamic.http.routers.crowdsec.service == "crowdsec"
           - traefik_lab_dynamic.http.routers.crowdsec.rule == "Host(`" ~ crowdsec_fqdn ~ "`)"
           - traefik_lab_dynamic.http.routers.scrapecast.rule == "Host(`" ~ app_fqdn ~ "`)"
           - traefik_lab_dynamic.http.routers['scrapecast-www'].middlewares == ["www-to-apex", "public-chain"]
-          - traefik_lab_dynamic.http.routers.signoz.middlewares == ["bootstrap-admin-chain"]
+          - traefik_lab_dynamic.http.routers.observe.middlewares == ["bootstrap-admin-chain"]
           - traefik_lab_dynamic.http.routers['traefik-dashboard'] is not defined
           - traefik_lab_dynamic.tls.certificates | length == 1
           - traefik_lab_dynamic.http.middlewares['crowdsec-bouncer'].plugin['crowdsec-bouncer'].enabled | bool
@@ -202,7 +208,7 @@
           - "'crowdsec-bouncer' in traefik_lab_dynamic.http.middlewares['admin-chain'].chain.middlewares"
           - "'crowdsec-bouncer' in traefik_lab_dynamic.http.middlewares['bootstrap-admin-chain'].chain.middlewares"
           - traefik_lab_dynamic.http.services.crowdsec.loadBalancer.servers[0].url == "http://127.0.0.1:18092"
-          - traefik_lab_dynamic.http.serversTransports['wazuh-transport'].rootCAs == ["/etc/traefik/wazuh-root-ca.pem"]
+          - traefik_lab_dynamic.http.middlewares['security-dashboard-redirect'].redirectRegex.permanent | bool
 
     - name: Render Traefik static config for TLS-ALPN ACME
       ansible.builtin.template:
@@ -276,7 +282,7 @@
     - name: Require outpost callbacks to skip the WAF
       ansible.builtin.assert:
         that:
-          - traefik_protect_dynamic.http.routers.signoz.middlewares == ["admin-chain"]
+          - traefik_protect_dynamic.http.routers.observe.middlewares == ["admin-chain"]
           - traefik_protect_dynamic.http.routers.crowdsec.middlewares == ["admin-chain"]
           - traefik_protect_dynamic.http.routers['traefik-dashboard'].service == "api@internal"
           - traefik_protect_dynamic.http.services['authentik-outpost'].loadBalancer.servers[0].url == "http://127.0.0.1:19000"
@@ -1209,8 +1215,8 @@
         that:
           - modsec_dynamic.http.routers.forgejo.service == "waf"
           - modsec_dynamic.http.routers.authentik.service == "waf"
-          - modsec_dynamic.http.routers.signoz.service == "waf"
-          - modsec_dynamic.http.routers.wazuh.service == "waf"
+          - modsec_dynamic.http.routers.observe.service == "waf"
+          - modsec_dynamic.http.routers.security.service == "waf"
           - modsec_dynamic.http.services.waf.loadBalancer.servers[0].url == "http://127.0.0.1:18090"
           - "'crowdsec-bouncer' not in modsec_dynamic.http.middlewares['public-chain'].chain.middlewares"
           - modsec_static.experimental.plugins is not defined

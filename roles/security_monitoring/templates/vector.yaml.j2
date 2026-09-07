@@ -1,0 +1,25 @@
+data_dir: /var/lib/vector
+sources:
+  journal:
+    type: journald
+  audit:
+    type: file
+    include: [/var/log/audit/audit.log]
+  security_files:
+    type: file
+    include: [/var/log/auth.log, /var/log/sudo.log, /var/log/fail2ban.log, /var/log/trivy/*/events.ndjson, /var/log/rustinel/alerts.json.*, /var/log/suricata/platform/eve-security.json, /var/log/zeek/*/current/*.log]
+transforms:
+  normalize:
+    type: remap
+    inputs: [journal, audit, security_files]
+    source: |-
+      .host = "{{ platform_hostname }}"
+      .environment = "production"
+      ._msg = to_string(.message) ?? to_string(.MESSAGE) ?? encode_json(.)
+sinks:
+  victorialogs:
+    type: http
+    inputs: [normalize]
+    uri: "http://127.0.0.1:{{ victoria_logs_port }}/insert/jsonline"
+    encoding: {codec: json}
+    framing: {method: newline_delimited}

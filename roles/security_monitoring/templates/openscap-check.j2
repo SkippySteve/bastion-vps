@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+report=/var/lib/platform-openscap/report.xml
+oscap xccdf eval --results "$report" /usr/share/xml/scap/ssg/content/ssg-debian13-xccdf.xml || true
+printf '{"scanner":"openscap","report":"%s","timestamp":"%s"}\n' "$report" "$(date -u +%FT%TZ)" | curl --fail --silent --show-error -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:{{ victoria_logs_port }}/insert/jsonline

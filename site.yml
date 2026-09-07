@@ -15,16 +15,24 @@
       tags: [base, firewall, ssh, setup, all]
     - role: platform
       tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server, setup, all]
+    - role: victoria
+      tags: [victoria, observability, grafana, alerts, setup, all]
+      when: security_observability_stack == 'victoria'
+    - role: security_monitoring
+      tags: [security_monitoring, vector, falco, aide, openscap, setup, all]
+      when: security_observability_stack == 'victoria'
     - role: fail2ban
       tags: [fail2ban, setup, all]
     - role: telemetry
       tags: [telemetry, alerts, otelcol, setup, all]
+      when: security_observability_stack == 'legacy_wazuh_signoz'
     - role: sensors
       tags: [sensors, suricata, zeek, silk, yaf, setup, all]
     - role: trivy
       tags: [trivy, setup, all]
     - role: wazuh_agent
       tags: [wazuh_agent, setup, all]
+      when: security_observability_stack == 'legacy_wazuh_signoz'
     - role: rustinel
       tags: [rustinel, setup, all]
       when: rustinel_enabled | bool

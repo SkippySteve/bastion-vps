@@ -1,0 +1,16 @@
+groups:
+  - name: platform_metrics
+    interval: 1m
+    rules:
+      - alert: VictoriaTargetDown
+        expr: up == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Victoria scrape target unavailable"
+      - alert: VictoriaLogsDroppedRows
+        expr: rate(vl_rows_dropped_total[5m]) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "VictoriaLogs is dropping rows outside the allowed timestamp range"

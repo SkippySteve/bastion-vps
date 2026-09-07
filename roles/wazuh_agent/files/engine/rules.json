@@ -370,6 +370,81 @@
       }
     },
     {
+      "sigma_id": "trivy-100301",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Trivy scan summary",
+        "description": "Migrated from 4.x rule 100301. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100301"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_summary",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_summary": {"event.original|contains": "\"event_type\":\"summary\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100302",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Trivy finding resolved",
+        "description": "Migrated from 4.x rule 100302. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100302"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_resolved",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_resolved": {"event.original|contains": "\"event_type\":\"resolved\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100304",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Trivy LOW or UNKNOWN finding",
+        "description": "Migrated from 4.x rule 100304. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100304"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_new and (low or unknown)",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_new": {"event.original|contains": "\"event_type\":\"new\""},
+        "low": {"event.original|contains": "\"severity\":\"LOW\""},
+        "unknown": {"event.original|contains": "\"severity\":\"UNKNOWN\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100305",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "Trivy MEDIUM finding",
+        "description": "Migrated from 4.x rule 100305. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100305"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_new and medium",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_new": {"event.original|contains": "\"event_type\":\"new\""},
+        "medium": {"event.original|contains": "\"severity\":\"MEDIUM\""}
+      }
+    },
+    {
       "sigma_id": "trivy-100306",
       "enabled": true,
       "status": "experimental",

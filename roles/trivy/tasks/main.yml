@@ -129,7 +129,7 @@
   loop_control:
     label: "{{ item.value.name }}"
 
-- name: Apply Trivy unit and Wazuh rule changes
+- name: Apply Trivy unit changes
   ansible.builtin.meta: flush_handlers
 
 - name: Enable staggered Trivy scans

@@ -118,9 +118,7 @@
         - {src: ../roles/fail2ban/templates/filter.d/forgejo.conf.j2, dest: fail2ban-forgejo.conf}
         - {src: ../roles/fail2ban/templates/action.d/nftables-waf.conf.j2, dest: fail2ban-nftables-waf.conf}
         - {src: ../roles/trivy/templates/trivy-platform-scan.py.j2, dest: trivy-platform-scan}
-        - {src: ../roles/trivy/templates/trivy-rules.xml.j2, dest: trivy-rules.xml}
         - {src: ../roles/wazuh_agent/templates/localfiles.xml.j2, dest: wazuh-localfiles.xml}
-        - {src: ../roles/wazuh_agent/templates/platform-security-rules.xml.j2, dest: platform-security-rules.xml}
         - {src: ../roles/telemetry/templates/alerts.json.j2, dest: signoz-alerts.json}
         - {src: ../roles/backup/templates/profiles.yaml.j2, dest: resticprofile.yaml}
         - {src: ../roles/backup/templates/dump.sh.j2, dest: platform-backup-dump}
@@ -626,7 +624,6 @@
         - "{{ playbook_dir }}/../roles/wazuh_agent/tasks/main.yml"
         - "{{ playbook_dir }}/../roles/platform/tasks/main.yml"
         - "{{ render_root }}/wazuh-localfiles.xml"
-        - "{{ render_root }}/platform-security-rules.xml"
         - "{{ render_root }}/audit-platform.rules"
         - "{{ render_root }}/suricata-platform.yaml"
         - "{{ playbook_dir }}/../roles/base/tasks/main.yml"
@@ -642,15 +639,14 @@
         wazuh_agent_tasks_src: "{{ wazuh_render_raw.results[1].content | b64decode }}"
         platform_wazuh_tasks_src: "{{ wazuh_render_raw.results[2].content | b64decode }}"
         wazuh_agent_localfiles_src: "{{ wazuh_render_raw.results[3].content | b64decode }}"
-        wazuh_platform_rules_src: "{{ wazuh_render_raw.results[4].content | b64decode }}"
-        audit_platform_rules_src: "{{ wazuh_render_raw.results[5].content | b64decode }}"
-        render_suricata_security_src: "{{ wazuh_render_raw.results[6].content | b64decode }}"
-        base_security_tasks_src: "{{ wazuh_render_raw.results[7].content | b64decode }}"
-        sensor_security_tasks_src: "{{ wazuh_render_raw.results[8].content | b64decode }}"
-        verify_security_tasks_src: "{{ wazuh_render_raw.results[9].content | b64decode }}"
-        cis_security_tasks_src: "{{ wazuh_render_raw.results[10].content | b64decode }}"
-        wazuh_engine_rules: "{{ wazuh_render_raw.results[11].content | b64decode | from_json }}"
-        wazuh_engine_rule_ids: "{{ (wazuh_render_raw.results[11].content | b64decode | from_json).rules | map(attribute='sigma_id') | list }}"
+        audit_platform_rules_src: "{{ wazuh_render_raw.results[4].content | b64decode }}"
+        render_suricata_security_src: "{{ wazuh_render_raw.results[5].content | b64decode }}"
+        base_security_tasks_src: "{{ wazuh_render_raw.results[6].content | b64decode }}"
+        sensor_security_tasks_src: "{{ wazuh_render_raw.results[7].content | b64decode }}"
+        verify_security_tasks_src: "{{ wazuh_render_raw.results[8].content | b64decode }}"
+        cis_security_tasks_src: "{{ wazuh_render_raw.results[9].content | b64decode }}"
+        wazuh_engine_rules: "{{ wazuh_render_raw.results[10].content | b64decode | from_json }}"
+        wazuh_engine_rule_ids: "{{ (wazuh_render_raw.results[10].content | b64decode | from_json).rules | map(attribute='sigma_id') | list }}"
 
     - name: Require Wazuh 5.0.0-beta5 on loopback with 5.x paths
       ansible.builtin.assert:
@@ -698,8 +694,8 @@
           - "'--uid=' in wazuh_agent_tasks_src"
           - "'LimitMEMLOCK=infinity' in wazuh_agent_tasks_src"
           - "'LimitNOFILE=655360' in wazuh_agent_tasks_src"
-          - "'platform_network_ids' in wazuh_platform_rules_src"
-          - "'platform_waf' in wazuh_platform_rules_src"
+          - "'platform.network_ids' in (wazuh_engine_rules.rules | map(attribute='metadata') | map(attribute='description') | join(' '))"
+          - "'platform.waf' in (wazuh_engine_rules.rules | map(attribute='metadata') | map(attribute='description') | join(' '))"
           - "'platform-100416' in wazuh_engine_rule_ids"
           - "'platform-100417' in wazuh_engine_rule_ids"
           - "'rustinel-100500' in wazuh_engine_rule_ids"
@@ -744,14 +740,13 @@
           - render_wazuh_compose.services['wazuh.manager'].environment.API_PASSWORD is not defined
           - render_wazuh_compose.services['wazuh.dashboard'].environment.API_PASSWORD is defined
 
-    - name: Validate rendered Wazuh security XML
+    - name: Validate rendered Wazuh agent localfiles XML
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
           - -c
           - >-
             import xml.etree.ElementTree as ET;
-            ET.parse('{{ render_root }}/platform-security-rules.xml');
             ET.fromstring('<root>' + open('{{ render_root }}/wazuh-localfiles.xml').read() + '</root>')
       changed_when: false
 
@@ -784,7 +779,6 @@
         src: "{{ item }}"
       loop:
         - "{{ render_root }}/trivy-platform-scan"
-        - "{{ render_root }}/trivy-rules.xml"
         - "{{ playbook_dir }}/../roles/trivy/tasks/main.yml"
         - "{{ playbook_dir }}/../roles/wazuh_agent/templates/localfiles.xml.j2"
         - "{{ playbook_dir }}/../examples/forgejo-workflow.yml"
@@ -794,11 +788,10 @@
     - name: Decode Trivy integration sources
       ansible.builtin.set_fact:
         render_trivy_scanner: "{{ trivy_sources_raw.results[0].content | b64decode }}"
-        render_trivy_rules: "{{ trivy_sources_raw.results[1].content | b64decode }}"
-        trivy_tasks_src: "{{ trivy_sources_raw.results[2].content | b64decode }}"
-        trivy_localfiles_src: "{{ trivy_sources_raw.results[3].content | b64decode }}"
-        trivy_workflow_src: "{{ trivy_sources_raw.results[4].content | b64decode }}"
-        trivy_site_src: "{{ trivy_sources_raw.results[5].content | b64decode }}"
+        trivy_tasks_src: "{{ trivy_sources_raw.results[1].content | b64decode }}"
+        trivy_localfiles_src: "{{ trivy_sources_raw.results[2].content | b64decode }}"
+        trivy_workflow_src: "{{ trivy_sources_raw.results[3].content | b64decode }}"
+        trivy_site_src: "{{ trivy_sources_raw.results[4].content | b64decode }}"
 
     - name: Require each Trivy service to stay in its rootless account
       ansible.builtin.assert:
@@ -859,14 +852,6 @@
           - "{{ playbook_dir }}/fixtures/trivy-report.json"
       changed_when: false
 
-    - name: Validate the rendered Wazuh Trivy rules
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - -c
-          - "import xml.etree.ElementTree as ET; ET.parse('{{ render_root }}/trivy-rules.xml')"
-      changed_when: false
-
     - name: Require complete Trivy host, Wazuh, and CI wiring
       ansible.builtin.assert:
         that:
@@ -877,8 +862,12 @@
           - "'artifact_checksums.trivy' in trivy_tasks_src"
           - "'trivy-scan-' in trivy_tasks_src"
           - "'/var/log/trivy/*/events.ndjson' in trivy_localfiles_src"
-          - "'<decoded_as>json</decoded_as>' in render_trivy_rules"
-          - "'<field name=\"integration\">^trivy$</field>' in render_trivy_rules"
+          - "'trivy-100301' in wazuh_engine_rule_ids"
+          - "'trivy-100304' in wazuh_engine_rule_ids"
+          - "'trivy-100305' in wazuh_engine_rule_ids"
+          - "'trivy-100306' in wazuh_engine_rule_ids"
+          - "'trivy-100307' in wazuh_engine_rule_ids"
+          - "'trivy-100308' in wazuh_engine_rule_ids"
           - "'--ignore-unfixed' in trivy_workflow_src"
           - "'--severity HIGH,CRITICAL' in trivy_workflow_src"
           - "'--exit-code 1' in trivy_workflow_src"
@@ -1040,6 +1029,8 @@
           - "'trivy-100307' in (engine_rules_obj.rules | map(attribute='sigma_id') | list)"
           - engine_rules_obj.rules | selectattr('sigma_id', 'equalto', 'platform-100401') | list | length == 0
           - "'Host firewall dropped an inbound packet' in (engine_rules_obj.logtests | map(attribute='expect_title') | list)"
+          - "'platform-security-rules.xml.j2' not in (lookup('fileglob', playbook_dir ~ '/../roles/wazuh_agent/templates/*.j2', wantlist=True) | map('basename') | list)"
+          - "'trivy-rules.xml.j2' not in (lookup('fileglob', playbook_dir ~ '/../roles/trivy/templates/*.j2', wantlist=True) | map('basename') | list)"
           - "'platform-root-filesystem-85' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
           - "'platform-clickhouse-memory' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
           - "'platform-otelcol-export-failures' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"

@@ -383,7 +383,12 @@
       - "'platform-100410' in verify_engine_sigma_ids"
       - "'platform-100412' in verify_engine_sigma_ids"
       - "'platform-100413' in verify_engine_sigma_ids"
+      - "'trivy-100301' in verify_engine_sigma_ids"
+      - "'trivy-100304' in verify_engine_sigma_ids"
+      - "'trivy-100305' in verify_engine_sigma_ids"
+      - "'trivy-100306' in verify_engine_sigma_ids"
       - "'trivy-100307' in verify_engine_sigma_ids"
+      - "'trivy-100308' in verify_engine_sigma_ids"
       - verify_engine_state_obj.integration_id | length > 0
       - verify_engine_state_obj.status == "verified"
       - verify_engine_state_obj.rules_sha256 == (verify_engine_rules.content | b64decode | hash('sha256'))

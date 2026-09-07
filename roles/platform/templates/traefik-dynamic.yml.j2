@@ -180,7 +180,7 @@ http:
           crowdsecLapiScheme: http
           crowdsecLapiHost: "127.0.0.1:{{ crowdsec_lapi_port }}"
           crowdsecLapiKey: "{{ crowdsec_bouncer_api_key }}"
-          crowdsecAppsecEnabled: true
+          crowdsecAppsecEnabled: {{ crowdsec_appsec_enabled | default(false) | bool | lower }}
           crowdsecAppsecHost: "127.0.0.1:{{ crowdsec_appsec_port }}"
           crowdsecAppsecFailureBlock: false
           crowdsecAppsecUnreachableBlock: false

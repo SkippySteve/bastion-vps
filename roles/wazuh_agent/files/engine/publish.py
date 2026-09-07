@@ -252,6 +252,8 @@ class ContentClient:
                 # retrying them only obscures the deployment failure.
                 if exc.status is not None and exc.status not in {408, 425, 429, 500, 502, 503, 504}:
                     raise
+                if "SSLCertVerificationError" in last_error:
+                    raise
             time.sleep(delay)
         raise ContentManagerError(last_error)
 
@@ -289,7 +291,14 @@ def detection_matches(payload: Any) -> list[dict[str, Any]]:
                 raise ValueError("invalid match")
         return matches
     except (KeyError, TypeError, ValueError) as exc:
-        raise ContentManagerError("logtest must return valid normalization and successful nonempty rule evaluation") from exc
+        try:
+            body = json.dumps(payload, sort_keys=True)
+        except (TypeError, ValueError):
+            body = repr(payload)
+        raise ContentManagerError(
+            "logtest must return valid normalization and successful nonempty rule evaluation; "
+            f"body={body[:1600]}"
+        ) from exc
 
 
 def match_titles(matches: list[dict[str, Any]]) -> list[str]:
@@ -308,7 +317,11 @@ def filter_promotion(preview: Any, wanted_ids: set[str]) -> dict[str, list[dict[
     if not isinstance(message, dict) or not isinstance(message.get("changes"), dict):
         raise ContentManagerError("invalid promotion preview")
     changes = message["changes"]
-    filtered: dict[str, list[dict[str, str]]] = {}
+    # Content Manager requires all resource categories on every promote request,
+    # even where this deployment has no changes for that category.
+    filtered: dict[str, list[dict[str, str]]] = {
+        kind: [] for kind in ("policy", "integrations", "kvdbs", "decoders", "filters", "rules")
+    }
     for kind, items in changes.items():
         if not isinstance(items, list):
             raise ContentManagerError("invalid promotion changes")
@@ -317,7 +330,7 @@ def filter_promotion(preview: Any, wanted_ids: set[str]) -> dict[str, list[dict[
                 raise ContentManagerError("invalid promotion item")
             safe_id(item.get("id"))
         kept = [item for item in items if isinstance(item, dict) and item.get("id") in wanted_ids]
-        if kept:
+        if kind in filtered:
             filtered[kind] = kept
     return filtered
 
@@ -325,7 +338,7 @@ def filter_promotion(preview: Any, wanted_ids: set[str]) -> dict[str, list[dict[
 def promote(client: ContentClient, space: str, wanted_ids: set[str]) -> None:
     preview = client.request("GET", f"/_plugins/_content_manager/promote?space={space}")
     changes = filter_promotion(preview, wanted_ids)
-    if not changes:
+    if not any(changes.values()):
         return
     client.request("POST", "/_plugins/_content_manager/promote", {"space": space, "changes": changes})
 
@@ -361,9 +374,11 @@ def logtest(client: ContentClient, integration_id: str, case: dict[str, Any], sp
     )]
     if offenders:
         raise ContentManagerError(f"{space} authentication outcome check failed: " + json.dumps(offenders))
-    expected_prefix = case.get("expect_prefix")
-    if vendor and expected_prefix and expected_prefix.startswith("Failed"):
-        expected_prefix = None
+    # Wazuh's bundled integrations are versioned upstream content. Require that
+    # each enabled rule evaluated, and reject a contradictory authentication
+    # outcome above, but do not depend on an upstream display title or whether a
+    # particular bundled rule emits an alert for this fixture.
+    expected_prefix = None if vendor else case.get("expect_prefix")
     if expected_prefix and not any(title.startswith(expected_prefix) for title in titles):
         raise ContentManagerError(f"{space} logtest missing {expected_prefix!r}: {titles}")
 
@@ -416,6 +431,17 @@ def verify_managed_content(client: ContentClient, document: dict[str, Any], inte
                 got = {field: got.get(field) for field in value}
             if got != value:
                 raise ContentManagerError(f"{space} rule {rule['sigma_id']} has stale {key}")
+
+
+def resource_is_current(actual: dict[str, Any], wanted: dict[str, Any]) -> bool:
+    """Compare only publisher-owned resource fields, ignoring server-generated fields."""
+    for key, value in wanted.items():
+        got = actual.get(key)
+        if key == "metadata" and isinstance(got, dict):
+            got = {field: got.get(field) for field in value}
+        if got != value:
+            return False
+    return True
 
 
 def publish(args: argparse.Namespace) -> int:
@@ -520,6 +546,9 @@ def publish(args: argparse.Namespace) -> int:
         resource = resource_from_rule(rule)
         existing = rule_ids.get(sigma_id)
         if existing:
+            current = next((item for item in discovered_rules if item["id"] == existing), None)
+            if current and resource_is_current(current, resource):
+                continue
             try:
                 client.request(
                     "PUT",
@@ -557,18 +586,18 @@ def publish(args: argparse.Namespace) -> int:
         persist_state()
 
     ordered_rule_ids = [rule_ids[rule["sigma_id"]] for rule in document["rules"]]
-    client.request(
-        "PUT",
-        f"/_plugins/_content_manager/integrations/{integration_id}",
-        {
-            "resource": {
-                **integration_resource,
-                "rules": ordered_rule_ids,
-                "decoders": [],
-                "kvdbs": [],
-            }
-        },
-    )
+    integration_update = {
+        **integration_resource,
+        "rules": ordered_rule_ids,
+        "decoders": [],
+        "kvdbs": [],
+    }
+    if not found or not resource_is_current(found, integration_update):
+        client.request(
+            "PUT",
+            f"/_plugins/_content_manager/integrations/{integration_id}",
+            {"resource": integration_update},
+        )
 
     wanted_ids = {integration_id, *rule_ids.values(), *removed_rule_ids}
     promote(client, "draft", wanted_ids)

@@ -123,6 +123,22 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(json.loads(self.state.read_text())["status"], "unverified")
         self.assertFalse(any(call[1].endswith(("/rules", "/integrations", "/promote")) for call in self.client.calls))
 
+    def test_vendor_logtest_allows_no_upstream_title_when_every_rule_evaluates(self):
+        result = {"message": {"normalization": {"validation": {"valid": True}}, "detection": {
+            "status": "success", "rules_evaluated": 1, "rules_matched": 0, "matches": []
+        }}}
+        with patch.object(self.client, "request", return_value=result):
+            M.logtest(self.client, uuid(1), DOCUMENT["logtests"][2], "standard", vendor=True, expected_rules=1)
+
+    def test_promotions_include_empty_required_resource_categories(self):
+        self.publish()
+        required = {"policy", "integrations", "kvdbs", "decoders", "filters", "rules"}
+        promotions = [payload for method, path, payload in self.client.calls
+                      if method == "POST" and path.endswith("/promote")]
+        self.assertTrue(promotions)
+        for payload in promotions:
+            self.assertEqual(set(payload["changes"]), required)
+
     def test_unavailable_tests_fail(self):
         self.client.unavailable = True
         with self.assertRaises(M.ContentManagerError):
@@ -208,11 +224,18 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaises(M.ContentManagerError):
                 M.created_id({"message": {"id": value}})
         for body in ({}, {"message": {}}, {"message": {"detection": {"status": "skipped"}}}):
-            with self.assertRaises(M.ContentManagerError):
+            with self.assertRaisesRegex(M.ContentManagerError, "body="):
                 M.detection_matches(body)
         with patch.object(self.client, "request", return_value={"hits": {"hits": []}}):
             with self.assertRaises(M.ContentManagerError):
                 M.integration_in(self.client, "auditd", "standard")
+
+    def test_repeat_publishing_does_not_rewrite_current_draft_content(self):
+        self.publish()
+        self.client.calls.clear()
+        self.publish()
+        writes = [(method, path) for method, path, _ in self.client.calls if method == "PUT"]
+        self.assertEqual(writes, [])
 
     def test_transport_error_preserves_tls_or_socket_reason(self):
         import urllib.error
@@ -227,6 +250,18 @@ class PublisherTests(unittest.TestCase):
             client.timeout = 1
             with self.assertRaisesRegex(M.ContentManagerError, "certificate verify failed"):
                 client.request("GET", "/_cluster/health")
+
+    def test_tls_verification_failure_does_not_retry_indexer_readiness(self):
+        client = object.__new__(M.ContentClient)
+        with patch.object(
+            client,
+            "request",
+            side_effect=M.ContentManagerError("unavailable API (SSLCertVerificationError: certificate verify failed)"),
+        ) as request, patch.object(M.time, "sleep") as sleep:
+            with self.assertRaisesRegex(M.ContentManagerError, "SSLCertVerificationError"):
+                client.wait_for_indexer(attempts=60, delay=5)
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
 
     def test_path_boundary_and_symlinks(self):
         for uid, mode in ((1000, stat.S_IFDIR | 0o700), (0, stat.S_IFDIR | 0o775), (0, stat.S_IFLNK | 0o777)):
@@ -256,6 +291,15 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(re.search(success["succeeded"]["event.original|re"], " res=successful"))
         for raw in (" res=unknown res=success'", " res=success res=failed'", " res=success res=success'"):
             self.assertTrue(re.search(success["ambiguous"]["event.original|re"], raw))
+
+    def test_rustinel_rule_uses_only_wazuh_common_schema_fields(self):
+        rustinel = next(rule for rule in DOCUMENT["rules"] if rule["sigma_id"] == "rustinel-100500")
+        serialized = json.dumps(rustinel["detection"])
+        self.assertNotIn("edr.rule.", serialized)
+        self.assertIn("event.module", serialized)
+        self.assertIn("event.dataset", serialized)
+        self.assertIn("rule.name", serialized)
+        self.assertIn("rule.id", serialized)
 
 
 if __name__ == "__main__":

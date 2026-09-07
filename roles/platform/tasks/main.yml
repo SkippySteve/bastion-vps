@@ -1030,6 +1030,17 @@
     label: "{{ item.name }} :{{ item.port }}"
   tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
+- name: Keep the CrowdSec local API client on loopback
+  ansible.builtin.replace:
+    path: "/var/lib/{{ service_accounts.waf.name }}/stacks/waf/config/local_api_credentials.yaml"
+    regexp: '^url:\\s*http://0\\.0\\.0\\.0:8080\\s*$'
+    replace: 'url: http://127.0.0.1:8080'
+  notify: Restart secure WAF
+  when:
+    - waf_provider | default('crowdsec') == 'crowdsec'
+    - "'waf' in (platform_active_stack_units | map(attribute='account') | list)"
+  tags: [platform, waf]
+
 - name: Check registered CrowdSec machines
   ansible.builtin.command:
     argv:

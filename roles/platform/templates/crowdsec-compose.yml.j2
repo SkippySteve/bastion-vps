@@ -3,8 +3,11 @@ services:
   crowdsec:
     image: "{{ crowdsec_image }}"
     container_name: crowdsec
-    network_mode: host
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:{{ crowdsec_lapi_port }}:8080"
+      - "127.0.0.1:{{ crowdsec_appsec_port }}:7422"
+      - "127.0.0.1:{{ crowdsec_metrics_port }}:6060"
     environment:
       COLLECTIONS: "{{ crowdsec_collections | join(' ') }}"
       BOUNCER_KEY_traefik: "{{ crowdsec_bouncer_api_key }}"
@@ -26,18 +29,21 @@ services:
   web-ui:
     image: "{{ crowdsec_web_ui_image }}"
     container_name: crowdsec-web-ui
-    network_mode: host
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:{{ crowdsec_web_ui_port }}:3000"
     depends_on:
       - crowdsec
     environment:
-      CONFIG_SERVER_PORT: "{{ crowdsec_web_ui_port }}"
-      CONFIG_INSTANCE_LAPI_URL: "http://127.0.0.1:{{ crowdsec_lapi_port }}"
+      CONFIG_INSTANCE_LAPI_URL: "http://crowdsec:8080"
       CONFIG_INSTANCE_LAPI_AUTH_USERNAME: "crowdsec-web-ui"
       CONFIG_INSTANCE_LAPI_AUTH_PASSWORD: "{{ crowdsec_web_ui_api_key }}"
       CONFIG_STORAGE_DATA_DIR: "/app/data"
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    # The upstream entrypoint repairs ownership of its writable SQLite data
+    # directory before dropping to the node user.
+    cap_add: [CHOWN]
     volumes:
       - ./web-ui-data:/app/data:rw

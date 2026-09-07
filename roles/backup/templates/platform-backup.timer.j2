@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily resticprofile backup to Backblaze B2
+
+[Timer]
+OnCalendar={{ backup_schedule }}
+Persistent=true
+RandomizedDelaySec=900
+Unit=platform-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -26,12 +26,12 @@
     remote_src: true
     owner: "{{ service_accounts.wazuh.name }}"
     group: "{{ service_accounts.wazuh.name }}"
-    mode: "0644"
+    mode: "{{ item.mode }}"
   loop:
-    - {src: wazuh.manager.pem, dest: manager.pem}
-    - {src: wazuh.manager-key.pem, dest: manager-key.pem}
-    - {src: wazuh.manager.pem, dest: indexer-connector.pem}
-    - {src: wazuh.manager-key.pem, dest: indexer-connector-key.pem}
+    - {src: wazuh.manager.pem, dest: manager.pem, mode: "0644"}
+    - {src: wazuh.manager-key.pem, dest: manager-key.pem, mode: "0640"}
+    - {src: wazuh.manager.pem, dest: indexer-connector.pem, mode: "0644"}
+    - {src: wazuh.manager-key.pem, dest: indexer-connector-key.pem, mode: "0640"}
   loop_control:
     label: "{{ item.dest }}"
   notify: Restart secure Wazuh

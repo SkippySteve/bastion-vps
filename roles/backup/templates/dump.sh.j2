@@ -1,0 +1,199 @@
+#!/bin/bash
+# Dump application-consistent copies into the resticprofile staging directory.
+# Forgejo and Wazuh Indexer volumes are archived only after a clean stop.
+set -euo pipefail
+umask 077
+
+STAGING="{{ backup_staging_dir }}"
+BACKUP_ROOT="/var/lib/platform-backup"
+EDGE_HOME="/var/lib/{{ service_accounts.edge.name }}"
+WAZUH_STACK="/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
+INCLUDE_SILK="{{ backup_include_silk | bool | lower }}"
+ENABLE_SCRAPECAST="{{ enable_scrapecast | bool | lower }}"
+
+run_as_stack() {
+  local user="$1"
+  local uid="$2"
+  shift 2
+  /usr/bin/systemd-run --collect --wait --pipe \
+    --uid="$user" --gid="$user" \
+    -p LimitMEMLOCK=infinity \
+    -p LimitNOFILE=655360 \
+    --setenv="HOME=/var/lib/$user" \
+    --setenv="XDG_RUNTIME_DIR=/run/user/$uid" \
+    "$@"
+}
+
+stack_exec() {
+  local user="$1"
+  local uid="$2"
+  local container="$3"
+  shift 3
+  run_as_stack "$user" "$uid" /usr/bin/podman exec "$container" "$@"
+}
+
+# Only the root shell opens staging. The service process sees stdout, not its path.
+export_clickhouse_archive() {
+  local user="$1" uid="$2" container="$3" archive="$4" destination="$5" partial
+  partial="$(mktemp "${destination}.partial.XXXXXX")" || return 1
+  if stack_exec "$user" "$uid" "$container" cat "/var/lib/clickhouse/backups/${archive}" >"$partial" &&
+     [[ -s "$partial" ]] && chmod 0600 "$partial" && mv -f -- "$partial" "$destination"; then
+    return 0
+  fi
+  rm -f -- "$partial"
+  return 1
+}
+
+container_running() {
+  local user="$1"
+  local uid="$2"
+  local container="$3"
+  run_as_stack "$user" "$uid" /usr/bin/podman inspect --format '{% raw %}{{.State.Running}}{% endraw %}' "$container" 2>/dev/null | grep -qx true
+}
+
+write_note() {
+  local name="$1"
+  local reason="$2"
+  printf '%s\n' "$reason" >"${STAGING}/notes/${name}.txt"
+}
+
+die() {
+  printf 'Backup aborted: %s\n' "$*" >&2
+  exit 1
+}
+
+safe_reset_dir() {
+  local requested="$1" canonical
+  [[ "$requested" = /* ]] || die "non-absolute staging path: $requested"
+  canonical="$(realpath -m -- "$requested")"
+  case "$canonical" in
+    "$BACKUP_ROOT"/*) ;;
+    *) die "staging path is outside $BACKUP_ROOT: $canonical" ;;
+  esac
+  [[ "$canonical" != "$BACKUP_ROOT" ]] || die "refusing to remove $BACKUP_ROOT"
+  rm -rf --one-file-system -- "$canonical"
+  install -d -m 0700 -- "$canonical/notes"
+  printf '%s\n' "$canonical"
+}
+
+container_mount_source() {
+  local user="$1" uid="$2" container="$3" destination="$4"
+  run_as_stack "$user" "$uid" /usr/bin/podman inspect "$container" |
+    /usr/bin/python3 -c 'import json,sys; d=sys.argv[1]; mounts=json.load(sys.stdin)[0].get("Mounts", []); matches=[m["Source"] for m in mounts if m.get("Destination")==d]; len(matches)==1 or sys.exit(2); print(matches[0])' "$destination"
+}
+
+declare -a RESTART_CONTAINERS=()
+restart_stopped_containers() {
+  local entry user uid container
+  for entry in "${RESTART_CONTAINERS[@]}"; do
+    IFS=: read -r user uid container <<<"$entry"
+    run_as_stack "$user" "$uid" /usr/bin/podman start "$container" >/dev/null || true
+  done
+}
+trap restart_stopped_containers EXIT
+
+stop_for_archive() {
+  local user="$1" uid="$2" container="$3"
+  run_as_stack "$user" "$uid" /usr/bin/podman stop --time 120 "$container" >/dev/null
+  RESTART_CONTAINERS+=("$user:$uid:$container")
+}
+
+STAGING="$(safe_reset_dir "$STAGING")"
+
+if container_running "{{ service_accounts.auth.name }}" "{{ service_accounts.auth.uid }}" authentik-postgresql; then
+  stack_exec "{{ service_accounts.auth.name }}" "{{ service_accounts.auth.uid }}" authentik-postgresql \
+    pg_dump -U authentik -d authentik --no-owner --format=plain \
+    >"${STAGING}/authentik.sql"
+  if container_running "{{ service_accounts.auth.name }}" "{{ service_accounts.auth.uid }}" authentik-worker; then
+    stack_exec "{{ service_accounts.auth.name }}" "{{ service_accounts.auth.uid }}" authentik-worker \
+      tar -C / -cf - media certs >"${STAGING}/authentik-media-certs.tar" || die "authentik worker archive of /media and /certs failed"
+  else
+    die "authentik-worker is not running"
+  fi
+else
+  die "authentik-postgresql is not running"
+fi
+
+if [ "${ENABLE_SCRAPECAST}" = "true" ] && container_running "{{ service_accounts.scrapecast.name }}" "{{ service_accounts.scrapecast.uid }}" scrapecast-postgres; then
+  stack_exec "{{ service_accounts.scrapecast.name }}" "{{ service_accounts.scrapecast.uid }}" scrapecast-postgres \
+    pg_dump -U scrapecast -d scrapecast --no-owner --format=plain \
+    >"${STAGING}/scrapecast.sql"
+elif [ "${ENABLE_SCRAPECAST}" = "true" ]; then
+  die "scrapecast-postgres is enabled but not running"
+fi
+
+if container_running "{{ service_accounts.forgejo.name }}" "{{ service_accounts.forgejo.uid }}" forgejo; then
+  forgejo_data="$(container_mount_source "{{ service_accounts.forgejo.name }}" "{{ service_accounts.forgejo.uid }}" forgejo /var/lib/gitea)"
+  forgejo_config="$(container_mount_source "{{ service_accounts.forgejo.name }}" "{{ service_accounts.forgejo.uid }}" forgejo /etc/gitea)"
+  stop_for_archive "{{ service_accounts.forgejo.name }}" "{{ service_accounts.forgejo.uid }}" forgejo
+  tar --one-file-system -C "$forgejo_data" -cf "${STAGING}/forgejo-data.tar" .
+  tar --one-file-system -C "$forgejo_config" -cf "${STAGING}/forgejo-config.tar" .
+  run_as_stack "{{ service_accounts.forgejo.name }}" "{{ service_accounts.forgejo.uid }}" /usr/bin/podman start forgejo >/dev/null
+else
+  die "forgejo is not running"
+fi
+
+if container_running "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-metastore-postgres-0; then
+  stack_exec "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-metastore-postgres-0 \
+    pg_dump -U signoz -d signoz --no-owner --format=plain \
+    >"${STAGING}/signoz.sql"
+else
+  die "signoz-metastore-postgres-0 is not running"
+fi
+
+if container_running "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-telemetrystore-clickhouse-0-0; then
+  stack_exec "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-telemetrystore-clickhouse-0-0 \
+    clickhouse-client --query "SHOW DATABASES" |
+  while IFS= read -r database; do
+    case "$database" in system|information_schema|INFORMATION_SCHEMA|'') continue ;; esac
+    [[ "$database" =~ ^[A-Za-z0-9_]+$ ]] || die "unsafe ClickHouse database name: $database"
+    archive="platform-${database}.zip"
+    stack_exec "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-telemetrystore-clickhouse-0-0 \
+      rm -f "/var/lib/clickhouse/backups/${archive}"
+    stack_exec "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" signoz-telemetrystore-clickhouse-0-0 \
+      clickhouse-client --query "BACKUP DATABASE \`${database}\` TO File('/var/lib/clickhouse/backups/${archive}')" \
+      2>"${STAGING}/notes/clickhouse-${database}.err"
+    export_clickhouse_archive "{{ service_accounts.signoz.name }}" "{{ service_accounts.signoz.uid }}" \
+      signoz-telemetrystore-clickhouse-0-0 "$archive" "${STAGING}/clickhouse-${database}.zip" \
+      || die "ClickHouse archive export failed: $database"
+  done
+else
+  die "signoz-telemetrystore-clickhouse-0-0 is not running"
+fi
+
+if [ -f "${EDGE_HOME}/stacks/edge/acme.json" ]; then
+  cp -a "${EDGE_HOME}/stacks/edge/acme.json" "${STAGING}/acme.json"
+  chmod 600 "${STAGING}/acme.json"
+else
+  write_note acme "acme.json is not present; a replacement certificate must be issued"
+fi
+
+if container_running "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" wazuh-manager; then
+  stack_exec "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" wazuh-manager \
+    tar -C /var/wazuh-manager/etc -cf - . >"${STAGING}/wazuh-manager-etc.tar"
+else
+  die "wazuh-manager is not running"
+fi
+
+if [ -d "${WAZUH_STACK}/config" ] && [ -f "${WAZUH_STACK}/compose.secure.yml" ]; then
+  tar --one-file-system -C "$WAZUH_STACK" -cf "${STAGING}/wazuh-stack-config.tar" \
+    config compose.secure.yml
+else
+  die "Wazuh stack configuration is missing"
+fi
+
+if container_running "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" wazuh-indexer; then
+  wazuh_indexer_data="$(container_mount_source "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" wazuh-indexer /var/lib/wazuh-indexer)"
+  stop_for_archive "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" wazuh-indexer
+  tar --one-file-system -C "$wazuh_indexer_data" -cf "${STAGING}/wazuh-indexer-data.tar" .
+  run_as_stack "{{ service_accounts.wazuh.name }}" "{{ service_accounts.wazuh.uid }}" /usr/bin/podman start wazuh-indexer >/dev/null
+else
+  die "wazuh-indexer is not running"
+fi
+
+if [ "${INCLUDE_SILK}" = "true" ] && [ -d /var/lib/silk/data ]; then
+  tar -C /var/lib/silk -cf "${STAGING}/silk-data.tar" data
+fi
+
+find "${STAGING}" -type f -exec chmod 600 {} +
+find "${STAGING}" -type d -exec chmod 700 {} +

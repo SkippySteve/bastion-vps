@@ -79,3 +79,103 @@
     enabled: true
     state: started
   loop: "{{ service_accounts | dict2items }}"
+
+- name: Create libexec for the SigNoz alert helper
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the SigNoz alert config directory
+  ansible.builtin.file:
+    path: /etc/signoz
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the SigNoz alert upsert helper
+  ansible.builtin.copy:
+    src: upsert-alerts.py
+    dest: /usr/local/libexec/platform-signoz-alerts
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render SigNoz operations alert rules
+  ansible.builtin.template:
+    src: alerts.json.j2
+    dest: /etc/signoz/platform-alerts.json
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Warn when SigNoz alert rules cannot be applied
+  ansible.builtin.debug:
+    msg: >-
+      signoz_api_token is empty. Collection is running; managed disk,
+      ClickHouse, collector, unit-failure, and Traefik alerts were not
+      upserted. Create an API key in SigNoz and rerun --tags telemetry.
+  when: signoz_api_token | default('') | length == 0
+
+- name: Apply managed SigNoz operations alerts
+  when: signoz_api_token | default('') | length > 0
+  block:
+    - name: Confirm the SigNoz API belongs to the running rootless container
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - inspect
+          - signoz-signoz-0
+      become: true
+      become_user: "{{ service_accounts.signoz.name }}"
+      environment:
+        HOME: "/var/lib/{{ service_accounts.signoz.name }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
+      register: telemetry_signoz_container
+      changed_when: false
+      failed_when: >-
+        telemetry_signoz_container.rc != 0 or
+        not ((telemetry_signoz_container.stdout | from_json)[0].State.Running | bool)
+
+    - name: Wait for the SigNoz UI API
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ signoz_ui_port }}"
+        timeout: 120
+
+    - name: Stage the SigNoz API token
+      ansible.builtin.copy:
+        dest: /run/platform-signoz-api.token
+        content: "{{ signoz_api_token }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Upsert SigNoz operations alert rules
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - /usr/local/libexec/platform-signoz-alerts
+          - --rules
+          - /etc/signoz/platform-alerts.json
+          - --url
+          - "http://127.0.0.1:{{ signoz_ui_port }}"
+          - --token-file
+          - /run/platform-signoz-api.token
+      register: telemetry_signoz_alerts
+      changed_when: telemetry_signoz_alerts.stdout is search('created |updated ')
+      retries: 5
+      delay: 10
+      until: telemetry_signoz_alerts.rc == 0
+  always:
+    - name: Remove the staged SigNoz API token
+      ansible.builtin.file:
+        path: /run/platform-signoz-api.token
+        state: absent
+      changed_when: false
+      when: signoz_api_token | default('') | length > 0

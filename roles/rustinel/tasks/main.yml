@@ -1,0 +1,145 @@
+---
+- name: Validate Rustinel is supported on this host
+  ansible.builtin.assert:
+    that:
+      - ansible_system == 'Linux'
+      - ansible_distribution == 'Debian'
+      - ansible_distribution_major_version | int == 13
+      - ansible_architecture in ['x86_64', 'aarch64']
+      - rustinel_enabled | bool
+    fail_msg: "Rustinel requires Debian 13 Linux on amd64 or arm64."
+
+- name: Select the pinned Rustinel release directory
+  ansible.builtin.set_fact:
+    rustinel_release_dir: "/opt/rustinel/rustinel-{{ rustinel_version }}-{{ 'x86_64-unknown-linux-musl' if ansible_architecture == 'x86_64' else 'aarch64-unknown-linux-musl' }}"
+
+- name: Require BTF support for Rustinel's Linux eBPF sensor
+  ansible.builtin.stat:
+    path: /sys/kernel/btf/vmlinux
+  register: rustinel_btf
+
+- name: Reject hosts without kernel BTF
+  ansible.builtin.assert:
+    that: rustinel_btf.stat.exists
+    fail_msg: "Rustinel Linux needs kernel BTF support (/sys/kernel/btf/vmlinux)."
+
+- name: Create the dedicated Rustinel service account
+  ansible.builtin.user:
+    name: "{{ rustinel_service_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/rustinel
+    create_home: false
+    groups: wazuh
+    append: true
+
+- name: Create protected Rustinel directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(rustinel_service_user) }}"
+    group: "{{ item.group | default(rustinel_service_user) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /opt/rustinel, owner: root, group: root, mode: '0755'}
+    - {path: /etc/rustinel, owner: root, group: root, mode: '0750'}
+    - {path: /var/lib/rustinel, mode: '0700'}
+    - {path: /var/lib/rustinel/rules, mode: '0700'}
+    - {path: /var/log/rustinel, group: wazuh, mode: '0750'}
+
+- name: Download the pinned Rustinel Linux release
+  ansible.builtin.get_url:
+    url: "https://github.com/Karib0u/rustinel/releases/download/v{{ rustinel_version }}/rustinel-{{ rustinel_version }}-{{ 'x86_64-unknown-linux-musl' if ansible_architecture == 'x86_64' else 'aarch64-unknown-linux-musl' }}.tar.gz"
+    dest: "/var/cache/rustinel-{{ rustinel_version }}.tar.gz"
+    checksum: "sha256:{{ rustinel_binary_checksums['amd64' if ansible_architecture == 'x86_64' else 'arm64'] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract Rustinel into a versioned directory
+  ansible.builtin.unarchive:
+    src: "/var/cache/rustinel-{{ rustinel_version }}.tar.gz"
+    dest: /opt/rustinel
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ rustinel_release_dir }}"
+
+- name: Install the Rustinel executable
+  ansible.builtin.copy:
+    src: "{{ rustinel_release_dir }}/rustinel"
+    dest: /opt/rustinel/rustinel
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Rustinel
+
+- name: Download the pinned Linux Essential detection pack
+  ansible.builtin.get_url:
+    url: "https://github.com/Karib0u/rustinel-rules/releases/download/v{{ rustinel_rules_version }}/linux-essential-{{ rustinel_rules_version }}.zip"
+    dest: "/var/cache/rustinel-linux-essential-{{ rustinel_rules_version }}.zip"
+    checksum: "sha256:{{ rustinel_linux_essential_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage the Linux Essential pack
+  ansible.builtin.file:
+    path: "/var/lib/rustinel/rules/{{ rustinel_rules_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Extract the Linux Essential pack into its versioned directory
+  ansible.builtin.unarchive:
+    src: "/var/cache/rustinel-linux-essential-{{ rustinel_rules_version }}.zip"
+    dest: "/var/lib/rustinel/rules/{{ rustinel_rules_version }}"
+    remote_src: true
+    owner: root
+    group: root
+  register: rustinel_rules_extract
+
+- name: Activate the Linux Essential pack atomically
+  ansible.builtin.stat:
+    path: /var/lib/rustinel/rules/current
+  register: rustinel_current_rules
+
+- name: Activate the Linux Essential pack atomically
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - >-
+        ln -sfnT /var/lib/rustinel/rules/{{ rustinel_rules_version }}
+        /var/lib/rustinel/rules/.current.new
+        && mv -Tf /var/lib/rustinel/rules/.current.new /var/lib/rustinel/rules/current
+  when: rustinel_rules_extract.changed or not rustinel_current_rules.stat.exists
+  changed_when: true
+  notify: Restart Rustinel
+
+- name: Install Rustinel configuration
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/rustinel/config.toml
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart Rustinel
+
+- name: Install Rustinel systemd service
+  ansible.builtin.template:
+    src: rustinel.service.j2
+    dest: /etc/systemd/system/rustinel.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Rustinel
+
+- name: Enable and start Rustinel
+  ansible.builtin.systemd_service:
+    name: rustinel.service
+    enabled: true
+    state: started
+    daemon_reload: true

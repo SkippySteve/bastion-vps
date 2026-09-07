@@ -38,6 +38,40 @@ Flags you will see:
 | `-e name=value` | Override one variable for this run only. |
 | `--tags platform` | Run only the roles that have that tag. |
 
+### Tags and maintenance variables
+
+The normal full deployment is intentionally idempotent. Useful focused runs are:
+
+```bash
+# Base platform, Wazuh, and live verification
+uv run ansible-playbook site.yml --ask-vault-pass --tags platform,wazuh_agent,verify
+
+# Backups and restore workflows (do not include restore during deployment)
+uv run ansible-playbook site.yml --ask-vault-pass --tags backup
+uv run ansible-playbook site.yml --ask-vault-pass --tags backup_restore,restore
+```
+
+Certificate rotation is opt-in. `wazuh_rotate_certificates` defaults to `false`,
+so repeated runs preserve the root CA and valid dependent certificates. For a
+planned rotation, the platform role archives the existing CA and dependent
+certificates, regenerates the complete Wazuh trust chain, and restarts Wazuh:
+
+```bash
+uv run ansible-playbook site.yml --ask-vault-pass \
+  --tags platform -e wazuh_rotate_certificates=true
+```
+
+Rotation replaces the root CA, so every signed Wazuh certificate and trust store
+is replaced together. Treat it as a maintenance event; existing external clients
+that trust the old CA must be updated.
+
+For a fresh host, one full run is preferred; it includes preflight and all roles:
+
+```bash
+uv run ansible-playbook site.yml --ask-vault-pass \
+  -e firewall_lockdown_confirm=false
+```
+
 The controller talks to one host group, `secure_vps`. `ansible.cfg` already points at `inventory/hosts.yml`.
 
 ### What you need
@@ -393,7 +427,7 @@ uv run ansible-playbook site.yml \
   -e firewall_lockdown_confirm=true
 ```
 
-Useful tags: `preflight`, `dns`, `base`, `platform`, `trivy`, `telemetry`, `sensors`, `wazuh_agent`, `runner`, `scrapecast`, `verify`.
+Useful tags: `preflight`, `dns`, `base`, `platform`, `trivy`, `telemetry`, `sensors`, `wazuh_agent`, `runner`, `scrapecast`, `backup`, `restore`, `verify`.
 
 ## How it works
 
@@ -437,7 +471,7 @@ The host collector is the only app OTLP ingest. It queues and exports to SigNoz 
 
 Foundry's `replicas` field is 0-based: `replicas: 0` is one ClickHouse. `replicas: 1` starts a second node, and that pair will OOM an 8 GiB host during `system.metric_log` merges. The playbook caps the remaining node (`mem_limit` plus `max_server_memory_usage`) and deletes the ClickHouse and Keeper volumes when it sees the extra replica, then reforges Compose so only `clickhouse-0-0` remains. `podman-compose up` hangs forever on Foundry's `depends_on: service_healthy`, so the casting rewrites ClickHouse deps to `service_started` and vendors `histogramQuantile` instead of wget from GitHub at start. It waits for `SHOW CREATE TABLE signoz_traces.distributed_signoz_index_v3` before treating SigNoz as ready. The UI can listen before that table exists; that is the `failed to get tbl statement` error. Undersized hosts get a 4 GiB swap file. Postgres (users, dashboards) stays. Set `signoz_reset_telemetrystore: true` once if the store is already a single node with leftover two-replica schema.
 
-Create retention limits and alerts for error rate, p95/p99 latency, CPU/memory pressure, disk and ClickHouse growth, collector drops, sensor failures, and Wazuh health.
+The playbook upserts a small SigNoz alert set when `signoz_api_token` is in the vault: root and `/var/lib` disk, ClickHouse container memory, otelcol export failures from the operations journal, failed `secure-*`/sensor units, and Traefik 5xx plus p95. Channels start empty, so they show in the UI until you attach a notifier. Retention is still yours to set. Security detections stay in Wazuh.
 
 ### Packet visibility and Wazuh
 
@@ -449,20 +483,34 @@ Capturing WAN and loopback duplicates observations. Size disks accordingly.
 
 A native Wazuh agent on the host collects filtered SSH, sudo, identity, auditd, fail2ban, nftables, package, selected container, IDS, and WAF events. It does not forward every container or journal record. FIM covers host security policy, systemd, package/repository, sensor, telemetry, Trivy, rootless runtime, and stack configuration. There is no privileged Wazuh process inside each vendor container. If a control literally requires an agent PID in every container, this design does not meet that wording.
 
-Use **Threat Hunting** (the `wazuh-alerts-*` index) for rule-matched events. Start with `agent.name`, `rule.level`, `rule.groups`, `decoder.name`, and `location`, then pivot on `data.srcip`, `data.sensor.type`, `data.event_type`, CVE, signature, package, or container fields. Native journald metadata is used by the agent-side filters; Wazuh forwards those records in syslog form, so investigation uses the decoded program/message fields rather than `CONTAINER_NAME` or `_SYSTEMD_UNIT`.
+Wazuh 5.0.0-beta5 dropped classic `etc/rules` XML, `wazuh-logtest`, and `PUT /logtest`. The 4.x files under `roles/wazuh_agent/templates/platform-security-rules.xml.j2` and `roles/trivy/templates/trivy-rules.xml.j2` are a mapping of the old ids only; the manager does not evaluate them. Live detections are Sigma in `roles/wazuh_agent/files/engine/rules.json`, published Draft → Test → Custom through the indexer Content Manager. Ansible proves a representative event against Test with `/_plugins/_content_manager/logtest` before promoting to Custom.
 
-- `rule.groups:platform_auth` for SSH, sudo, Authentik, and Forgejo authentication activity.
-- `rule.groups:platform_firewall` for nftables drops and correlated scans.
-- `rule.groups:platform_waf` for ModSecurity and selected Traefik denials.
-- `rule.groups:platform_network_ids` for Suricata alerts/anomalies and selected Zeek detections.
-- `rule.groups:platform_control_health` for failed security controls.
-- `rule.groups:trivy` for image vulnerability, secret, and misconfiguration findings.
+Use **Threat Hunting** on `wazuh-findings-v5-*`, not `wazuh-alerts-*`. Filter on rule title or `sigma_id` (`platform-100400`, `trivy-100307`). Native journald metadata is used by the agent-side filters; Wazuh forwards those records in syslog form, so investigation uses the decoded program/message fields rather than `CONTAINER_NAME` or `_SYSTEMD_UNIT`.
+
+- `Host firewall dropped an inbound packet` (`platform-100400`) for nftables drops. Frequency correlation (old 100401) does not exist in 5.x.
+- `Host authentication or privilege failure` and `Identity or source-control authentication failure` for SSH, sudo, Authentik, and Forgejo.
+- `ModSecurity CRS detected or blocked a request` and Traefik 401/403/429 / TLS handshake errors.
+- Suricata alert/anomaly and Zeek notice/intel/signature/metadata titles for network IDS.
+- `A host security control reported a failure` for sshd/auditd/fail2ban health.
+- `Trivy HIGH finding`, `Trivy CRITICAL finding`, and `Trivy scan failed`.
 
 Use Wazuh's dedicated **File Integrity Monitoring**, **Configuration Assessment**, and **Vulnerability Detection** views for those datasets. Wazuh indexes meaningful rule matches rather than every raw network flow. SiLK flow records remain queryable with SiLK tools under `/var/lib/silk/data`; they are not text logs and should not be copied into Wazuh. Existing fail2ban/nftables actions remain the only automatic blocking path; Wazuh active response is not enabled.
 
-Apply the complete routing boundary with `ansible-playbook site.yml --tags base,platform,telemetry,sensors,wazuh_agent,verify`. The base tag installs auditd and deterministic Podman journal tags; the other tags update both collectors, sensor outputs, Wazuh rules, and end-to-end checks.
+Apply the complete routing boundary with `ansible-playbook site.yml --tags base,platform,telemetry,sensors,wazuh_agent,verify`. The base tag installs auditd and deterministic Podman journal tags; the other tags update both collectors, sensor outputs, engine content, and end-to-end checks.
 
-Trivy scans the image IDs used by running containers once per rootless account. Each account gets a private cache and can access only its own Podman socket. Raw reports stay under `/var/log/trivy/<account>/`; Wazuh receives normalized JSON events for new and resolved findings, scan summaries, and failures. Filter Wazuh alerts with `rule.groups:trivy`. Initial scans are staggered, and later scans run daily with randomized delay.
+For the publisher/login-outcome and ClickHouse export fixes on an existing deployment, use:
+
+```bash
+uv run ansible-playbook site.yml --tags platform,wazuh_agent,backup,verify --ask-vault-pass --ask-become-pass
+```
+
+Preflight runs automatically. Do not select `restore` during deployment. Publisher code, configuration, and progress now live in root-only `/usr/local/libexec/platform-wazuh/`, `/etc/platform-wazuh/`, and `/var/lib/platform-wazuh/`. Legacy stack `engine/` files remain untouched and unused. The existing CA is pinned once into the protected configuration directory; subsequent runs do not silently replace it. Credentials and CA identities are not rotated.
+
+Publishing discovers resources through authenticated Content Manager searches rather than trusting legacy UUID state. Before changing content, it runs audit login fixtures against the discovered Standard `auditd` integration. It then tests managed content in Test and repeats Standard/Custom production checks after promotion. Failed, missing, unknown, and contradictory outcomes must never have a successful-authentication title. Wazuh Standard rules are read-only: if the installed vendor rule still mislabels an event, deployment stops with the offending rule IDs/titles. No authentication events are suppressed and no vendor system indices are modified. Obtain a supported vendor correction before retrying. Existing indexed findings are unchanged.
+
+`--tags verify` performs live fixtures; a progress file alone is not evidence of verification. Local contract/render tests do not replace live Wazuh fixture execution or restoring an archive into an isolated ClickHouse instance. Both are required before declaring production acceptance complete.
+
+Trivy scans the image IDs used by running containers once per rootless account. Each account gets a private cache and can access only its own Podman socket. Raw reports stay under `/var/log/trivy/<account>/`; Wazuh receives normalized JSON events for new and resolved findings, scan summaries, and failures. Hunt with the Trivy titles above. Initial scans are staggered, and later scans run daily with randomized delay.
 
 Apply the manager rules, scanners, and agent reader together with `--tags platform,trivy,wazuh_agent`. To scan one account immediately, run `sudo systemctl start trivy-scan-svc-wazuh.service` (replace the account suffix as needed). After all initial timers have fired, set `trivy_verify_scan_results: true` and run `--tags verify` to require a completed report from every account.
 
@@ -478,17 +526,22 @@ Standalone binaries and source archives are checksum-pinned. Repository keys com
 
 ### Backups and recovery
 
-Back up at least:
+Off-box copies use resticprofile 0.33.1 plus Debian restic, destination Backblaze B2 over the S3 API (`s3:s3.<region>.backblazeb2.com/<bucket>/platform`). The native `b2:` backend hangs on this host. There is no backup web UI.
 
-- the encrypted vault and inventory from the controller
-- `/var/lib/svc-edge/stacks/edge/acme.json`
-- Forgejo data/config and SQLite (application-consistent stop or SQLite online backup)
-- Authentik PostgreSQL (`pg_dump`) plus media/certs
-- SigNoz PostgreSQL and ClickHouse using supported methods
-- Wazuh indexer snapshots and manager config/keys
-- `/var/lib/silk/data` if flow retention matters
+Set `backup_offsite_enabled: true` and put `backup_b2_key_id`, `backup_b2_application_key`, `backup_restic_password`, `backup_b2_bucket`, and `backup_b2_endpoint` in the vault. Ansible then installs dump hooks, resticprofile YAML, and systemd timers. A run-before hook writes recoverable artifacts to `/var/lib/platform-backup/staging`: Authentik and scrapecast `pg_dump`, Authentik media/certificates, SigNoz Postgres, every non-system ClickHouse database, `acme.json`, Wazuh manager and stack configuration (including its TLS material), and a cleanly stopped Wazuh Indexer data archive. Forgejo is briefly stopped while its complete data and configuration volumes are archived, including repositories, LFS, attachments, Actions artifacts, and packages. Required services or exports failing makes the backup fail, so retention pruning cannot turn an incomplete staging set into a green backup. Only paths below `/var/lib/platform-backup` are accepted for destructive staging/restore cleanup.
 
-Do not copy live database volume directories and call it a backup. Test restores on a separate host. Provider snapshots are crash-consistent only.
+```bash
+uv run ansible-playbook site.yml --tags backup --ask-vault-pass --ask-become-pass
+```
+
+Restore is a separate, harder gate. It writes the latest snapshot to `/var/lib/platform-backup/restore` and stops. You copy dumps onto a staging host or into new volumes by hand.
+
+```bash
+uv run ansible-playbook site.yml --tags restore --ask-vault-pass --ask-become-pass \
+  -e backup_restore_confirm=true
+```
+
+Also keep the encrypted vault on the controller. `/var/lib/silk/data` is optional (`backup_include_silk`). Provider snapshots stay crash-consistent only.
 
 If SSH or TLS fails after lockdown, use the provider console. Restore a corrected `/etc/nftables.conf` and restart nftables. Do not re-enable root or password SSH as routine recovery.
 

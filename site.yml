@@ -25,10 +25,16 @@
       tags: [trivy]
     - role: wazuh_agent
       tags: [wazuh_agent]
+    - role: rustinel
+      tags: [rustinel]
     - role: runner
       tags: [runner]
     - role: scrapecast
       tags: [scrapecast]
       when: enable_scrapecast | bool
+    - role: backup
+      tags: [backup, restore]
+    - role: backup_restore
+      tags: [never, restore]
     - role: verify
       tags: [verify]

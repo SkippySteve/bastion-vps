@@ -121,30 +121,56 @@
     wazuh_agent_manager_etc: "{{ (wazuh_agent_manager_inspect.stdout | from_json)[0].Mounts | selectattr('Destination', 'equalto', '/var/wazuh-manager/etc') | map(attribute='Source') | first }}"
     wazuh_agent_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
 
-- name: Create the managed Wazuh security rules directory
-  ansible.builtin.file:
-    path: "{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules"
-    state: directory
-    owner: "{{ service_accounts.wazuh.name }}"
-    group: "{{ service_accounts.wazuh.name }}"
-    mode: "0750"
-
-- name: Install platform security rules for Wazuh 5
-  ansible.builtin.template:
-    src: platform-security-rules.xml.j2
-    dest: "{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules/platform_security_rules.xml"
-    owner: "{{ service_accounts.wazuh.name }}"
-    group: "{{ service_accounts.wazuh.name }}"
-    mode: "0644"
-  notify: Restart secure Wazuh for security rules
-
-- name: Validate the platform security rule XML
+- name: Reject unsafe Wazuh publisher path ancestors before installation
   ansible.builtin.command:
     argv:
       - /usr/bin/python3
+      - -I
       - -c
-      - "import xml.etree.ElementTree as ET; ET.parse('{{ wazuh_agent_stack_dir }}/config/wazuh_manager/rules/platform_security_rules.xml')"
+      - |
+        import pathlib, stat
+        for target in ('/usr/local/libexec/platform-wazuh', '/etc/platform-wazuh', '/var/lib/platform-wazuh'):
+            path = pathlib.Path(target)
+            for entry in [*reversed(path.parents), path]:
+                if not entry.exists() and not entry.is_symlink():
+                    continue
+                info = entry.lstat()
+                if info.st_uid != 0 or info.st_mode & 0o022 or not stat.S_ISDIR(info.st_mode):
+                    raise SystemExit('Unsafe publisher path: ' + str(entry))
   changed_when: false
+
+- name: Create protected Wazuh publisher directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /usr/local/libexec/platform-wazuh
+    - /etc/platform-wazuh
+    - /var/lib/platform-wazuh
+
+- name: Install Wazuh 5 engine content files
+  ansible.builtin.copy:
+    src: "engine/{{ item.name }}"
+    dest: "{{ item.directory }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: rules.json, directory: /etc/platform-wazuh, mode: "0600"}
+    - {name: publish.py, directory: /usr/local/libexec/platform-wazuh, mode: "0700"}
+
+- name: Pin the existing Wazuh CA for publisher migration without rotating trust
+  ansible.builtin.copy:
+    src: "{{ wazuh_agent_stack_dir }}/config/root-ca/certs/root-ca.pem"
+    dest: /etc/platform-wazuh/root-ca.pem
+    remote_src: true
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
 
 - name: Read the manager authd password
   ansible.builtin.slurp:
@@ -340,33 +366,110 @@
 - name: Apply host agent enrollment changes
   ansible.builtin.meta: flush_handlers
 
-- name: Confirm the manager can read the mounted platform rules
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/systemd-run
-      - --collect
-      - --wait
-      - --pipe
-      - "--uid={{ service_accounts.wazuh.name }}"
-      - "--gid={{ service_accounts.wazuh.name }}"
-      - -p
-      - LimitMEMLOCK=infinity
-      - -p
-      - LimitNOFILE=655360
-      - "--setenv=HOME=/var/lib/{{ service_accounts.wazuh.name }}"
-      - "--setenv=XDG_RUNTIME_DIR=/run/user/{{ service_accounts.wazuh.uid }}"
-      - /usr/bin/podman
-      - exec
-      - wazuh-manager
-      - /bin/grep
-      - -F
-      - 'id="100400"'
-      - /wazuh-config-mount/etc/rules/platform_security_rules.xml
-  register: wazuh_agent_platform_rules_mount
-  changed_when: false
-  retries: 10
-  delay: 5
-  until: "'100400' in (wazuh_agent_platform_rules_mount.stdout | default(''))"
+- name: Wait for the loopback Wazuh indexer
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ wazuh_indexer_port }}"
+    timeout: 300
+
+- name: Publish platform detections through the Wazuh 5 Content Manager
+  block:
+    - name: Stage the indexer password for Content Manager publishing
+      ansible.builtin.copy:
+        dest: /etc/platform-wazuh/indexer.pass
+        content: "{{ wazuh_indexer_admin_password }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Stage the Wazuh Indexer client certificate for Content Manager publishing
+      ansible.builtin.copy:
+        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin.pem"
+        dest: /etc/platform-wazuh/admin.pem
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Stage the Wazuh Indexer client key for Content Manager publishing
+      ansible.builtin.copy:
+        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin-key.pem"
+        dest: /etc/platform-wazuh/admin-key.pem
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Publish platform detections to the Wazuh 5 engine
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - /usr/local/libexec/platform-wazuh/publish.py
+          - --rules
+          - /etc/platform-wazuh/rules.json
+          - --state
+          - /var/lib/platform-wazuh/state.json
+          - --url
+          - "https://127.0.0.1:{{ wazuh_indexer_port }}"
+          - --username
+          - admin
+          - --password-file
+          - /etc/platform-wazuh/indexer.pass
+          - --ca-file
+          - /etc/platform-wazuh/root-ca.pem
+          - --client-cert
+          - /etc/platform-wazuh/admin.pem
+          - --client-key
+          - /etc/platform-wazuh/admin-key.pem
+      register: wazuh_agent_engine_publish
+      changed_when: "'published' in (wazuh_agent_engine_publish.stdout | default(''))"
+  rescue:
+    - name: Collect Wazuh Indexer diagnostics when the publisher cannot connect
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - logs
+          - --tail
+          - "120"
+          - wazuh-indexer
+      become: true
+      become_user: "{{ service_accounts.wazuh.name }}"
+      environment:
+        HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.wazuh.uid }}"
+      register: wazuh_indexer_publish_diagnostics
+      changed_when: false
+      failed_when: false
+    - name: Fail with the Indexer diagnostics instead of hiding a reset connection
+      ansible.builtin.fail:
+        msg: >-
+          Wazuh Content Manager publisher could not reach the Indexer. The
+          Indexer may be restarting, OOM-killed, or rejecting TLS. Last
+          publisher error: {{ wazuh_agent_engine_publish.stderr | default('unknown') }}
+          Recent indexer logs:
+          {{ wazuh_indexer_publish_diagnostics.stdout | default('unavailable') }}
+  always:
+    - name: Remove the staged indexer password
+      ansible.builtin.file:
+        path: /etc/platform-wazuh/indexer.pass
+        state: absent
+      changed_when: false
+    - name: Remove staged Indexer client credentials
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/platform-wazuh/admin.pem
+        - /etc/platform-wazuh/admin-key.pem
+      changed_when: false
+
 - name: Wait until the manager lists this host
   ansible.builtin.command:
     argv:

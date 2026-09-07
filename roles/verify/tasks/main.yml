@@ -246,7 +246,7 @@
       - "'/var/log/zeek/' not in (verify_host_collector_config.content | b64decode)"
       - "'/var/log/silk/' not in (verify_host_collector_config.content | b64decode)"
 
-- name: Check Wazuh security source paths and managed rules
+- name: Check Wazuh security source paths and engine content
   ansible.builtin.stat:
     path: "{{ item }}"
   register: verify_wazuh_security_paths
@@ -254,33 +254,139 @@
     - /var/log/audit
     - /var/log/suricata/platform
     - /var/log/zeek
-    - "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node/config/wazuh_manager/rules/platform_security_rules.xml"
+    - /etc/platform-wazuh/rules.json
+    - /var/lib/platform-wazuh/state.json
 
-- name: Require Wazuh security source paths and rules
+- name: Require Wazuh security source paths and engine content
   ansible.builtin.assert:
     that: item.stat.exists
-    fail_msg: "Missing Wazuh security source or rule path: {{ item.item }}"
+    fail_msg: "Missing Wazuh security source or engine path: {{ item.item }}"
   loop: "{{ verify_wazuh_security_paths.results }}"
   loop_control:
     label: "{{ item.item }}"
 
-- name: Read the deployed platform security rules
-  ansible.builtin.slurp:
-    src: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node/config/wazuh_manager/rules/platform_security_rules.xml"
-  register: verify_platform_rules
+- name: Check the publisher privilege boundary before executing code
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -I
+      - -c
+      - |
+        import pathlib, stat
+        for target in (
+            '/usr/local/libexec/platform-wazuh/publish.py',
+            '/etc/platform-wazuh/rules.json',
+            '/etc/platform-wazuh/root-ca.pem',
+            '/var/lib/platform-wazuh/state.json',
+        ):
+            path = pathlib.Path(target)
+            for entry in [*reversed(path.parents), path]:
+                info = entry.lstat()
+                if info.st_uid != 0 or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+                    raise SystemExit('Unsafe publisher path: ' + str(entry))
+                if not (stat.S_ISREG(info.st_mode) if entry == path else stat.S_ISDIR(info.st_mode)):
+                    raise SystemExit('Unexpected publisher file type: ' + str(entry))
+  changed_when: false
 
-- name: Require deployed rules to cover the representative security events
+- name: Verify live Standard and Custom Wazuh authentication outcomes
+  block:
+    - name: Stage the indexer password for live verification
+      ansible.builtin.copy:
+        dest: /etc/platform-wazuh/indexer.pass
+        content: "{{ wazuh_indexer_admin_password }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Stage the Wazuh Indexer client certificate for live verification
+      ansible.builtin.copy:
+        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin.pem"
+        dest: /etc/platform-wazuh/admin.pem
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Stage the Wazuh Indexer client key for live verification
+      ansible.builtin.copy:
+        src: "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin-key.pem"
+        dest: /etc/platform-wazuh/admin-key.pem
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Run production Wazuh fixtures rather than trusting saved progress
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - /usr/local/libexec/platform-wazuh/publish.py
+          - --verify-only
+          - --rules
+          - /etc/platform-wazuh/rules.json
+          - --state
+          - /var/lib/platform-wazuh/state.json
+          - --url
+          - "https://127.0.0.1:{{ wazuh_indexer_port }}"
+          - --password-file
+          - /etc/platform-wazuh/indexer.pass
+          - --ca-file
+          - /etc/platform-wazuh/root-ca.pem
+          - --client-cert
+          - /etc/platform-wazuh/admin.pem
+          - --client-key
+          - /etc/platform-wazuh/admin-key.pem
+      changed_when: false
+  always:
+    - name: Remove the verification password
+      ansible.builtin.file:
+        path: /etc/platform-wazuh/indexer.pass
+        state: absent
+      changed_when: false
+    - name: Remove staged verification client credentials
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/platform-wazuh/admin.pem
+        - /etc/platform-wazuh/admin-key.pem
+      changed_when: false
+
+- name: Read the deployed Wazuh 5 engine rules
+  ansible.builtin.slurp:
+    src: /etc/platform-wazuh/rules.json
+  register: verify_engine_rules
+
+- name: Read the published Wazuh 5 engine state
+  ansible.builtin.slurp:
+    src: /var/lib/platform-wazuh/state.json
+  register: verify_engine_state
+
+- name: Require deployed engine content to cover the representative security events
   ansible.builtin.assert:
     that:
-      - "'id=\"100400\"' in verify_platform_rules_src"
-      - "'nft-input-drop' in verify_platform_rules_src"
-      - "'id=\"100403\"' in verify_platform_rules_src"
-      - "'id=\"100405\"' in verify_platform_rules_src"
-      - "'id=\"100406\"' in verify_platform_rules_src"
-      - "'id=\"100407\"' in verify_platform_rules_src"
-      - "'id=\"100410\"' in verify_platform_rules_src"
-      - "'id=\"100412\"' in verify_platform_rules_src"
-      - "'id=\"100413\"' in verify_platform_rules_src"
+      - verify_engine.integration.title == "platform-security"
+      - "'platform-100400' in verify_engine_sigma_ids"
+      - "'platform-100403' in verify_engine_sigma_ids"
+      - "'platform-100405' in verify_engine_sigma_ids"
+      - "'platform-100416' in verify_engine_sigma_ids"
+      - "'platform-100417' in verify_engine_sigma_ids"
+      - "'platform-100406' in verify_engine_sigma_ids"
+      - "'platform-100407' in verify_engine_sigma_ids"
+      - "'platform-100410' in verify_engine_sigma_ids"
+      - "'platform-100412' in verify_engine_sigma_ids"
+      - "'platform-100413' in verify_engine_sigma_ids"
+      - "'trivy-100307' in verify_engine_sigma_ids"
+      - verify_engine_state_obj.integration_id | length > 0
+      - verify_engine_state_obj.status == "verified"
+      - verify_engine_state_obj.rules_sha256 == (verify_engine_rules.content | b64decode | hash('sha256'))
       - "'nft-input-drop' in verify_journal_fixtures"
       - "'Failed publickey' in verify_journal_fixtures"
       - "'Authentication failed' in verify_journal_fixtures"
@@ -290,9 +396,11 @@
       - "'\"zeek.log\":\"notice.log\"' in verify_json_fixtures"
       - "'\"zeek.log\":\"intel.log\"' in verify_json_fixtures"
       - "'type=SYSCALL' in verify_audit_fixture"
-    fail_msg: Deployed Wazuh rules or fixtures no longer cover the expected security events
+    fail_msg: Deployed Wazuh engine content or fixtures no longer cover the expected security events
   vars:
-    verify_platform_rules_src: "{{ verify_platform_rules.content | b64decode }}"
+    verify_engine: "{{ verify_engine_rules.content | b64decode | from_json }}"
+    verify_engine_sigma_ids: "{{ verify_engine.rules | map(attribute='sigma_id') | list }}"
+    verify_engine_state_obj: "{{ verify_engine_state.content | b64decode | from_json }}"
     verify_journal_fixtures: "{{ lookup('file', role_path ~ '/../../tests/fixtures/wazuh-journal-events.log') }}"
     verify_json_fixtures: "{{ lookup('file', role_path ~ '/../../tests/fixtures/wazuh-security-events.ndjson') }}"
     verify_audit_fixture: "{{ lookup('file', role_path ~ '/../../tests/fixtures/audit-security-event.log') }}"

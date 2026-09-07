@@ -1,0 +1,33 @@
+version: "1"
+
+global:
+  ionice: true
+  nice: 10
+
+default:
+  initialize: true
+  repository: "s3:{{ backup_b2_endpoint }}/{{ backup_b2_bucket }}{% if backup_b2_prefix | length > 0 %}/{{ backup_b2_prefix }}{% endif %}"
+  password-file: /etc/resticprofile/password
+  env:
+    AWS_ACCESS_KEY_ID: "{{ backup_b2_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ backup_b2_application_key }}"
+  backup:
+    source:
+      - "{{ backup_staging_dir }}"
+    one-file-system: false
+    tag:
+      - platform
+      - "{{ platform_hostname }}"
+    run-before:
+      - /usr/local/libexec/platform-backup-dump
+    prometheus-save-to: /var/lib/platform-backup/resticprofile.prom
+  retention:
+    after-backup: true
+    prune: true
+    keep-daily: {{ backup_keep_daily | int }}
+    keep-weekly: {{ backup_keep_weekly | int }}
+    keep-monthly: {{ backup_keep_monthly | int }}
+  check:
+    read-data-subset: "5%"
+  restore:
+    target: "{{ backup_restore_dir }}"

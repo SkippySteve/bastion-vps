@@ -6,4 +6,6 @@ tls/
 .venv/
 dist/
 .render-test/
+__pycache__/
+*.py[cod]
 .cursor/

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly restic check of the platform backup repository
+
+[Timer]
+OnCalendar={{ backup_check_schedule }}
+Persistent=true
+RandomizedDelaySec=1800
+Unit=platform-backup-check.service
+
+[Install]
+WantedBy=timers.target

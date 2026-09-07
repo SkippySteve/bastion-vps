@@ -1,8 +1,4 @@
 ---
-- name: Remember the Wazuh stack path for Trivy rules
-  ansible.builtin.set_fact:
-    trivy_wazuh_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
-
 - name: Create the versioned Trivy installation directory
   ansible.builtin.file:
     path: "/opt/trivy/{{ trivy_version }}"
@@ -96,31 +92,6 @@
   loop: "{{ service_accounts | dict2items }}"
   loop_control:
     label: "{{ item.value.name }}"
-
-- name: Create the Wazuh custom rules source directory
-  ansible.builtin.file:
-    path: "{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules"
-    state: directory
-    owner: "{{ service_accounts.wazuh.name }}"
-    group: "{{ service_accounts.wazuh.name }}"
-    mode: "0750"
-
-- name: Install Wazuh 5 rules for normalized Trivy events
-  ansible.builtin.template:
-    src: trivy-rules.xml.j2
-    dest: "{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules/trivy_rules.xml"
-    owner: "{{ service_accounts.wazuh.name }}"
-    group: "{{ service_accounts.wazuh.name }}"
-    mode: "0644"
-  notify: Restart secure Wazuh for Trivy
-
-- name: Validate the Trivy Wazuh rule XML
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/python3
-      - -c
-      - "import xml.etree.ElementTree as ET; ET.parse('{{ trivy_wazuh_stack_dir }}/config/wazuh_manager/rules/trivy_rules.xml')"
-  changed_when: false
 
 - name: Install per-account Trivy scanner units
   ansible.builtin.template:

@@ -188,6 +188,17 @@ wazuh_api_password: $(yaml_quote "$wazuh_api_password")
 # cloudflare_api_token: ''
 # cloudflare_api_key: ''
 # cloudflare_email: ''
+
+# Optional Backblaze B2 over S3. Uncomment when backup_offsite_enabled is
+# true. Endpoint looks like s3.us-west-004.backblazeb2.com, not b2:.
+# backup_b2_key_id: ''
+# backup_b2_application_key: ''
+# backup_restic_password: ''
+# backup_b2_bucket: ''
+# backup_b2_endpoint: ''
+
+# Optional SigNoz API token for alert rules as code.
+# signoz_api_token: ''
 EOF
 
 install -d -m 700 "$(dirname "$output_path")"

@@ -564,10 +564,44 @@
     group: "{{ service_accounts.wazuh.name }}"
     mode: "0700"
 
+- name: Back up and remove dependent Wazuh certificates for explicit rotation
+  block:
+    - name: Archive existing Wazuh certificates before rotation
+      ansible.builtin.archive:
+        path:
+          - "{{ wazuh_stack_dir }}/config/root-ca/certs"
+          - "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs"
+          - "{{ wazuh_stack_dir }}/config/wazuh_manager/certs"
+          - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs"
+        dest: "{{ wazuh_stack_dir }}/wazuh-certs-backup-{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        owner: "{{ service_accounts.wazuh.name }}"
+        group: "{{ service_accounts.wazuh.name }}"
+        mode: "0600"
+      changed_when: true
+    - name: Remove the root and dependent certificates for explicit rotation
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.pem"
+        - "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.key"
+        - "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.srl"
+        - "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/admin-key.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/wazuh.indexer.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_indexer/certs/wazuh.indexer-key.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_manager/certs/wazuh.manager.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_manager/certs/wazuh.manager-key.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs/wazuh.dashboard.pem"
+        - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem"
+  when: wazuh_rotate_certificates | bool
+
 - name: Generate Wazuh 5 TLS certificates
   ansible.builtin.command:
     argv: ["{{ wazuh_stack_dir }}/wazuh-certs.sh"]
-    creates: "{{ wazuh_stack_dir }}/config/root-ca/certs/root-ca.pem"
+  register: platform_wazuh_cert_generation
+  changed_when: "'generated' in (platform_wazuh_cert_generation.stdout | default(''))"
+  notify: Restart secure Wazuh
   become: true
   become_user: "{{ service_accounts.wazuh.name }}"
   environment:
@@ -583,10 +617,10 @@
     patterns: "*.pem"
   register: platform_wazuh_pems
 
-- name: Let the indexer UID read Wazuh PEMs under rootless Podman
+- name: Apply least-privilege permissions to Wazuh certificates and private keys
   ansible.builtin.file:
     path: "{{ item.path }}"
-    mode: "0644"
+    mode: "{{ '0644' if ('wazuh_dashboard/certs' in item.path or 'wazuh_indexer/certs' in item.path) else ('0640' if item.path.endswith('-key.pem') else '0644') }}"
   loop: "{{ platform_wazuh_pems.files }}"
   loop_control:
     label: "{{ item.path }}"
@@ -795,6 +829,7 @@
     - {port: "{{ signoz_grpc_port }}", name: signoz-otlp-grpc}
     - {port: "{{ signoz_http_port }}", name: signoz-otlp-http}
     - {port: "{{ wazuh_dashboard_port }}", name: wazuh}
+    - {port: "{{ wazuh_indexer_port }}", name: wazuh-indexer}
     - {port: 15500, name: wazuh-api}
     - {port: "{{ public_port }}", name: traefik}
   loop_control:

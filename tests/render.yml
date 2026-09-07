@@ -15,6 +15,11 @@
       prefix: 24
     preflight_platform_arch: amd64
     wazuh_agent_has_unattended_logs: true
+    backup_b2_key_id: render-key-id
+    backup_b2_application_key: render-app-key
+    backup_restic_password: render-restic-password-ok
+    backup_b2_bucket: render-bucket
+    backup_b2_endpoint: s3.us-west-004.backblazeb2.com
     traefik_dynamic_directory: "{{ render_root }}/dynamic"
     traefik_acme_storage: "{{ render_root }}/acme.json"
     traefik_acme_ca_server: https://127.0.0.1:9/directory
@@ -65,6 +70,12 @@
         mode: "0600"
       vars:
         bootstrap_admin_htpasswd: 'bootstrap:$apr1$bB8Hc9SM$6oRbSymnTDkibTWzxZLSK1'
+        backup_b2_key_id: render-key-id
+        backup_b2_application_key: render-app-key
+        backup_restic_password: render-restic-password-ok
+        backup_b2_bucket: render-bucket
+        backup_b2_endpoint: s3.us-west-004.backblazeb2.com
+        wazuh_stack_dir: "{{ render_root }}/wazuh-cert-test"
       loop:
         - {src: ../roles/base/templates/containers.conf.j2, dest: containers.conf}
         - {src: ../roles/base/templates/sshd-hardening.conf.j2, dest: sshd.conf}
@@ -87,6 +98,7 @@
         - {src: ../roles/platform/templates/signoz-casting.yml.j2, dest: signoz-casting.yml}
         - {src: ../roles/platform/templates/wazuh-compose.yml.j2, dest: wazuh-compose.yml}
         - {src: ../roles/platform/templates/wazuh-internal-users.yml.j2, dest: wazuh-internal-users.yml}
+        - {src: ../roles/platform/templates/wazuh-certs.sh.j2, dest: wazuh-certs.sh}
         - {src: ../roles/telemetry/templates/host-otelcol.yml.j2, dest: host-otelcol.yml}
         - {src: ../roles/sensors/templates/suricata-platform.service.j2, dest: suricata.service}
         - {src: ../roles/sensors/templates/suricata-platform.yaml.j2, dest: suricata-platform.yaml}
@@ -109,6 +121,14 @@
         - {src: ../roles/trivy/templates/trivy-rules.xml.j2, dest: trivy-rules.xml}
         - {src: ../roles/wazuh_agent/templates/localfiles.xml.j2, dest: wazuh-localfiles.xml}
         - {src: ../roles/wazuh_agent/templates/platform-security-rules.xml.j2, dest: platform-security-rules.xml}
+        - {src: ../roles/telemetry/templates/alerts.json.j2, dest: signoz-alerts.json}
+        - {src: ../roles/backup/templates/profiles.yaml.j2, dest: resticprofile.yaml}
+        - {src: ../roles/backup/templates/dump.sh.j2, dest: platform-backup-dump}
+        - {src: ../roles/backup/templates/restore.sh.j2, dest: platform-backup-restore}
+        - {src: ../roles/backup/templates/platform-backup.service.j2, dest: platform-backup.service}
+        - {src: ../roles/backup/templates/platform-backup.timer.j2, dest: platform-backup.timer}
+        - {src: ../roles/backup/templates/platform-backup-check.service.j2, dest: platform-backup-check.service}
+        - {src: ../roles/backup/templates/platform-backup-check.timer.j2, dest: platform-backup-check.timer}
 
     - name: Render per-account Trivy scanner units
       ansible.builtin.template:
@@ -352,6 +372,12 @@
           - "'git-upload-pack' in render_waf_exclusions"
           - "'git-receive-pack' in render_waf_exclusions"
           - "'ctl:ruleEngine=Off' not in render_waf_exclusions"
+          - ("@streq " ~ observe_fqdn) in render_waf_exclusions
+          - "'@streq /logs/logs-explorer' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942100;ARGS:compositeQuery' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942100;ARGS:options' in render_waf_exclusions"
+          - "'ctl:ruleRemoveTargetById=942100;ARGS:activeLogId' in render_waf_exclusions"
+          - "'ctl:ruleRemoveById=942100' not in render_waf_exclusions"
 
     - name: Read rendered fail2ban files
       ansible.builtin.slurp:
@@ -607,6 +633,7 @@
         - "{{ playbook_dir }}/../roles/sensors/tasks/main.yml"
         - "{{ playbook_dir }}/../roles/verify/tasks/main.yml"
         - "{{ playbook_dir }}/../roles/base/tasks/cis_hardening.yml"
+        - "{{ playbook_dir }}/../roles/wazuh_agent/files/engine/rules.json"
       register: wazuh_render_raw
 
     - name: Decode rendered Wazuh Compose
@@ -622,6 +649,8 @@
         sensor_security_tasks_src: "{{ wazuh_render_raw.results[8].content | b64decode }}"
         verify_security_tasks_src: "{{ wazuh_render_raw.results[9].content | b64decode }}"
         cis_security_tasks_src: "{{ wazuh_render_raw.results[10].content | b64decode }}"
+        wazuh_engine_rules: "{{ wazuh_render_raw.results[11].content | b64decode | from_json }}"
+        wazuh_engine_rule_ids: "{{ (wazuh_render_raw.results[11].content | b64decode | from_json).rules | map(attribute='sigma_id') | list }}"
 
     - name: Require Wazuh 5.0.0-beta5 on loopback with 5.x paths
       ansible.builtin.assert:
@@ -634,7 +663,7 @@
           - "'127.0.0.1:1514:1514' in render_wazuh_compose.services['wazuh.manager'].ports"
           - "'127.0.0.1:1517:1517' in render_wazuh_compose.services['wazuh.manager'].ports"
           - "'127.0.0.1:15601:5601' in render_wazuh_compose.services['wazuh.dashboard'].ports"
-          - render_wazuh_compose.services['wazuh.indexer'].ports is not defined
+          - "'127.0.0.1:19200:9200' in render_wazuh_compose.services['wazuh.indexer'].ports"
           - "'service_healthy' not in (wazuh_render_raw.results[0].content | b64decode)"
           - "'wazuh_agent_apt_repo' in wazuh_agent_tasks_src"
           - "'wazuh_agent_package_version' in wazuh_agent_tasks_src"
@@ -660,15 +689,24 @@
           - "'/var/log/suricata/platform/eve-security.json' in wazuh_agent_localfiles_src"
           - "'/var/log/zeek/*/current/notice.log' in wazuh_agent_localfiles_src"
           - "'/var/log/silk/rwflowpack.log' not in wazuh_agent_localfiles_src"
+          - "'/var/log/rustinel/alerts.json.*' in wazuh_agent_localfiles_src"
           - "'wazuh_host_fim_paths' in wazuh_agent_tasks_src"
           - "'Remove an unfiltered location-first journald collector' in wazuh_agent_tasks_src"
-          - "'Confirm the manager can read the mounted platform rules' in wazuh_agent_tasks_src"
-          - "'/wazuh-config-mount/etc/rules/platform_security_rules.xml' in wazuh_agent_tasks_src"
+          - "'Publish platform detections to the Wazuh 5 engine' in wazuh_agent_tasks_src"
+          - "'/_plugins/_content_manager/' not in wazuh_agent_tasks_src"
+          - "'publish.py' in wazuh_agent_tasks_src"
           - "'--uid=' in wazuh_agent_tasks_src"
           - "'LimitMEMLOCK=infinity' in wazuh_agent_tasks_src"
           - "'LimitNOFILE=655360' in wazuh_agent_tasks_src"
           - "'platform_network_ids' in wazuh_platform_rules_src"
           - "'platform_waf' in wazuh_platform_rules_src"
+          - "'platform-100416' in wazuh_engine_rule_ids"
+          - "'platform-100417' in wazuh_engine_rule_ids"
+          - "'rustinel-100500' in wazuh_engine_rule_ids"
+          - "(wazuh_engine_rules.rules | selectattr('sigma_id', 'equalto', 'platform-100416') | first).metadata.title is match('^Failed user authentication - ')"
+          - "(wazuh_engine_rules.rules | selectattr('sigma_id', 'equalto', 'platform-100417') | first).metadata.title is match('^Successful user authentication - ')"
+          - "'not succeeded' in (wazuh_engine_rules.rules | selectattr('sigma_id', 'equalto', 'platform-100416') | first).detection.condition"
+          - "'not failed' in (wazuh_engine_rules.rules | selectattr('sigma_id', 'equalto', 'platform-100417') | first).detection.condition"
           - "'privileged_command' in audit_platform_rules_src"
           - "'eve-security.json' in render_suricata_security_src"
           - "'- files' in render_suricata_security_src"
@@ -692,12 +730,13 @@
           - "'generate-indexer-certs' not in platform_wazuh_tasks_src"
           - "'config/root-ca/certs/root-ca.pem' in platform_wazuh_tasks_src"
           - "'/wazuh-config-mount/etc/certs/' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'/wazuh-config-mount/etc/rules' not in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
           - "'/var/wazuh-manager/etc/certs/' not in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
           - "'wazuh-dashboard-config' not in (render_wazuh_compose.services['wazuh.dashboard'].volumes | join(' '))"
           - "'platform_wazuh_volumes' in platform_wazuh_tasks_src"
           - "'.wazuh5-seeded' in platform_wazuh_tasks_src"
           - "'platform_wazuh_pems' in platform_wazuh_tasks_src"
-          - "'Let the indexer UID read Wazuh PEMs' in platform_wazuh_tasks_src"
+          - "'Apply least-privilege permissions to Wazuh certificates and private keys' in platform_wazuh_tasks_src"
           - "'import_tasks: wazuh_api.yml' in platform_wazuh_tasks_src"
           - "'import_tasks: wazuh_indexer.yml' in platform_wazuh_tasks_src"
           - "'manager.pem' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
@@ -846,7 +885,7 @@
           - "'actions/upload-artifact@v4' in trivy_workflow_src"
           - "'if: always()' in trivy_workflow_src"
           - "'role: trivy' in trivy_site_src"
-          - "'/wazuh-config-mount/etc/rules:ro' in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
+          - "'/wazuh-config-mount/etc/rules:ro' not in (render_wazuh_compose.services['wazuh.manager'].volumes | join(' '))"
 
     - name: Read the base role sysctl tasks
       ansible.builtin.slurp:
@@ -859,3 +898,188 @@
           - "'/etc/sysctl.d/90-secure-platform.conf' in (base_tasks_raw.content | b64decode)"
           - "'/etc/sysctl.d/99-sysctl.conf' in (base_tasks_raw.content | b64decode)"
           - "'ip_unprivileged_port_start' in (base_tasks_raw.content | b64decode)"
+
+    - name: Validate Wazuh 5 engine content and publishers
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../roles/wazuh_agent/files/engine/publish.py"
+          - --rules
+          - "{{ playbook_dir }}/../roles/wazuh_agent/files/engine/rules.json"
+          - --validate-only
+          - --ca-file
+          - /dev/null
+      changed_when: false
+
+    - name: Test Wazuh Content Manager publisher convergence
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -B
+          - "{{ playbook_dir }}/test_wazuh_publisher.py"
+      changed_when: false
+
+    - name: Test backup export across a real unprivileged process boundary
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - "{{ playbook_dir }}/test_backup_export.py"
+          - "{{ render_root }}/platform-backup-dump"
+      changed_when: false
+
+    - name: Validate SigNoz alert upsert helper and rendered rules
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../roles/telemetry/files/upsert-alerts.py"
+          - --rules
+          - "{{ render_root }}/signoz-alerts.json"
+          - --token-file
+          - /dev/null
+          - --validate-only
+      changed_when: false
+
+    - name: Validate rendered backup and certificate shell helpers
+      ansible.builtin.command:
+        argv: [/bin/bash, -n, "{{ render_root }}/{{ item }}"]
+      loop:
+        - platform-backup-dump
+        - platform-backup-restore
+        - wazuh-certs.sh
+      changed_when: false
+
+    - name: Generate test Wazuh certificates
+      ansible.builtin.command:
+        argv: [/bin/bash, "{{ render_root }}/wazuh-certs.sh"]
+      register: render_wazuh_cert_generation
+      changed_when: "'generated' in render_wazuh_cert_generation.stdout"
+
+    - name: Prove Wazuh certificate generation is idempotent
+      ansible.builtin.command:
+        argv: [/bin/bash, "{{ render_root }}/wazuh-certs.sh"]
+      register: render_wazuh_cert_repeat
+      changed_when: false
+
+    - name: Verify the loopback indexer certificate identity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/openssl
+          - x509
+          - -in
+          - "{{ render_root }}/wazuh-cert-test/config/wazuh_indexer/certs/wazuh.indexer.pem"
+          - -noout
+          - -checkip
+          - 127.0.0.1
+      changed_when: false
+
+    - name: Inspect generated Wazuh certificate permissions
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ render_root }}/wazuh-cert-test/config/root-ca/certs/root-ca.key"
+        - "{{ render_root }}/wazuh-cert-test/config/wazuh_indexer/certs/wazuh.indexer-key.pem"
+        - "{{ render_root }}/wazuh-cert-test/config/wazuh_indexer/certs/wazuh.indexer.pem"
+        - "{{ render_root }}/wazuh-cert-test/config/wazuh_indexer/certs/admin-key.pem"
+        - "{{ render_root }}/wazuh-cert-test/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem"
+      register: render_wazuh_cert_stats
+
+    - name: Require private Wazuh keys to stay non-world-readable
+      ansible.builtin.assert:
+        that:
+          - render_wazuh_cert_repeat.stdout | trim == ''
+          - render_wazuh_cert_stats.results[0].stat.mode == '0640'
+          - render_wazuh_cert_stats.results[1].stat.mode == '0644'
+          - render_wazuh_cert_stats.results[2].stat.mode == '0644'
+          - render_wazuh_cert_stats.results[3].stat.mode == '0644'
+          - render_wazuh_cert_stats.results[4].stat.mode == '0644'
+
+    - name: Read engine, backup, telemetry, and site sources
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../roles/wazuh_agent/files/engine/rules.json"
+        - "{{ render_root }}/signoz-alerts.json"
+        - "{{ render_root }}/resticprofile.yaml"
+        - "{{ render_root }}/platform-backup-dump"
+        - "{{ render_root }}/platform-backup-restore"
+        - "{{ render_root }}/platform-backup.service"
+        - "{{ playbook_dir }}/../roles/telemetry/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/backup/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/backup_restore/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/preflight/tasks/main.yml"
+        - "{{ playbook_dir }}/../site.yml"
+        - "{{ playbook_dir }}/../roles/verify/tasks/main.yml"
+        - "{{ playbook_dir }}/../roles/wazuh_agent/files/engine/publish.py"
+        - "{{ playbook_dir }}/../roles/platform/templates/wazuh-certs.sh.j2"
+      register: next_work_raw
+
+    - name: Decode engine, backup, and telemetry sources
+      ansible.builtin.set_fact:
+        engine_rules_obj: "{{ next_work_raw.results[0].content | b64decode | from_json }}"
+        signoz_alerts_obj: "{{ next_work_raw.results[1].content | b64decode | from_json }}"
+        resticprofile_src: "{{ next_work_raw.results[2].content | b64decode }}"
+        backup_dump_src: "{{ next_work_raw.results[3].content | b64decode }}"
+        backup_restore_src: "{{ next_work_raw.results[4].content | b64decode }}"
+        backup_service_src: "{{ next_work_raw.results[5].content | b64decode }}"
+        telemetry_tasks_src: "{{ next_work_raw.results[6].content | b64decode }}"
+        backup_tasks_src: "{{ next_work_raw.results[7].content | b64decode }}"
+        backup_restore_tasks_src: "{{ next_work_raw.results[8].content | b64decode }}"
+        preflight_tasks_src: "{{ next_work_raw.results[9].content | b64decode }}"
+        next_work_site_src: "{{ next_work_raw.results[10].content | b64decode }}"
+        verify_engine_tasks_src: "{{ next_work_raw.results[11].content | b64decode }}"
+        wazuh_publish_src: "{{ next_work_raw.results[12].content | b64decode }}"
+        wazuh_certs_src: "{{ next_work_raw.results[13].content | b64decode }}"
+
+    - name: Require Wazuh 5 engine detections, resticprofile backups, and SigNoz alerts as code
+      ansible.builtin.assert:
+        that:
+          - engine_rules_obj.integration.title == "platform-security"
+          - "'platform-100400' in (engine_rules_obj.rules | map(attribute='sigma_id') | list)"
+          - "'rustinel-100500' in (engine_rules_obj.rules | map(attribute='sigma_id') | list)"
+          - "'trivy-100307' in (engine_rules_obj.rules | map(attribute='sigma_id') | list)"
+          - engine_rules_obj.rules | selectattr('sigma_id', 'equalto', 'platform-100401') | list | length == 0
+          - "'Host firewall dropped an inbound packet' in (engine_rules_obj.logtests | map(attribute='expect_title') | list)"
+          - "'platform-root-filesystem-85' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'platform-clickhouse-memory' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'platform-otelcol-export-failures' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'platform-failed-units' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'platform-traefik-5xx' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'platform-traefik-p95-latency' in (signoz_alerts_obj.rules | map(attribute='alert') | list)"
+          - "'s3:s3.us-west-004.backblazeb2.com/render-bucket/platform' in resticprofile_src"
+          - "'b2:' not in resticprofile_src"
+          - "'/usr/local/libexec/platform-backup-dump' in resticprofile_src"
+          - "'pg_dump' in backup_dump_src"
+          - "'forgejo-data.tar' in backup_dump_src"
+          - "'/var/lib/gitea' in backup_dump_src"
+          - "'acme.json' in backup_dump_src"
+          - "'BACKUP DATABASE' in backup_dump_src"
+          - "'export_clickhouse_archive' in backup_dump_src"
+          - "'podman cp' not in backup_dump_src"
+          - "'wazuh-indexer-data.tar' in backup_dump_src"
+          - "'wazuh-stack-config.tar' in backup_dump_src"
+          - "'rm -rf --one-file-system --' in backup_dump_src"
+          - "'rm -rf --one-file-system --' in backup_restore_src"
+          - "'Backup aborted:' in backup_dump_src"
+          - "'/var/lib/platform-backup/restore' in backup_restore_src"
+          - "'Do not copy them onto live volumes' in backup_restore_src"
+          - "'resticprofile' in backup_service_src"
+          - "'role: backup' in next_work_site_src"
+          - "'role: backup_restore' in next_work_site_src"
+          - "'tags: [never, restore]' in next_work_site_src"
+          - "'backup_restore_confirm | bool' in backup_restore_tasks_src"
+          - "'import_tasks: restore.yml' not in backup_tasks_src"
+          - "'backup_offsite_enabled' in preflight_tasks_src"
+          - "'s3.<region>.backblazeb2.com' in preflight_tasks_src"
+          - "'signoz_api_token' in telemetry_tasks_src"
+          - "'platform-signoz-alerts' in telemetry_tasks_src"
+          - "'Confirm the SigNoz API belongs to the running rootless container' in telemetry_tasks_src"
+          - "'/var/lib/platform-wazuh/state.json' in verify_engine_tasks_src"
+          - "'--verify-only' in verify_engine_tasks_src"
+          - "'platform_security_rules.xml' not in verify_engine_tasks_src"
+          - "'ssl.create_default_context(cafile=ca_file)' in wazuh_publish_src"
+          - "'_create_unverified_context' not in wazuh_publish_src"
+          - "'refusing to report stale security content as published' in wazuh_publish_src"
+          - "'IP:127.0.0.1' in wazuh_certs_src"
+          - "'*-key.pem' in wazuh_certs_src"
+          - "'chmod 640' in wazuh_certs_src"

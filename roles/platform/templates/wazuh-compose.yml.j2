@@ -31,13 +31,14 @@ services:
       - ./config/wazuh_manager/certs/wazuh.manager-key.pem:/wazuh-config-mount/etc/certs/indexer-connector-key.pem:ro
       - ./config/wazuh_manager/certs/wazuh.manager.pem:/wazuh-config-mount/etc/certs/manager.pem:ro
       - ./config/wazuh_manager/certs/wazuh.manager-key.pem:/wazuh-config-mount/etc/certs/manager-key.pem:ro
-      - ./config/wazuh_manager/rules:/wazuh-config-mount/etc/rules:ro
 
   wazuh.indexer:
     image: docker.io/wazuh/wazuh-indexer:{{ wazuh_version }}
     container_name: wazuh-indexer
     hostname: wazuh.indexer
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:{{ wazuh_indexer_port }}:9200"
     environment:
       - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
       - bootstrap.memory_lock=true

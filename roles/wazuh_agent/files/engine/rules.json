@@ -1,0 +1,450 @@
+{
+  "integration": {
+    "title": "platform-security",
+    "author": "debian13-secure-platform",
+    "category": "security",
+    "description": "Host, WAF, IDS, and Trivy detections for this single-node platform.",
+    "enabled": true
+  },
+  "logtests": [
+    {
+      "location": "journald",
+      "event": "Sep 05 23:00:01 secure-vps kernel: nft-input-drop IN=eth0 SRC=198.51.100.23 DST=192.0.2.10 PROTO=TCP DPT=22",
+      "expect_title": "Host firewall dropped an inbound packet"
+    },
+    {
+      "location": "journald",
+      "event": "Sep 05 23:00:02 secure-vps sshd[1000]: Failed publickey for invalid user test from 198.51.100.23 port 50000 ssh2",
+      "expect_title": "Host authentication or privilege failure"
+    },
+    {
+      "location": "/var/log/audit/audit.log",
+      "queue": 49,
+      "vendor_integration": "auditd",
+      "expect_prefix": "Failed user authentication - ",
+      "reject_prefixes": ["Successful user authentication"],
+      "event": "type=USER_LOGIN msg=audit(1788688261.969:18671): pid=1137096 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='op=login acct=28696E76616C6964207573657229 exe=\"/usr/lib/openssh/sshd-session\" hostname=? addr=14.177.234.46 terminal=sshd res=failed' UID=\"root\" AUID=\"unset\"",
+      "expect_title": "",
+      "reject_titles": ["Successful user authentication - 28696E76616C6964207573657229"]
+    },
+    {
+      "location": "/var/log/audit/audit.log",
+      "queue": 49,
+      "vendor_integration": "auditd",
+      "expect_prefix": "Successful user authentication - ",
+      "reject_prefixes": ["Failed user authentication"],
+      "event": "type=USER_LOGIN msg=audit(1788688262.969:18672): pid=1137097 uid=0 auid=1000 ses=42 subj=unconfined msg='op=login acct=6F7073 exe=\"/usr/lib/openssh/sshd-session\" hostname=? addr=192.0.2.25 terminal=sshd res=success' UID=\"root\" AUID=\"ops\"",
+      "expect_title": "",
+      "reject_titles": ["Failed user authentication - 6F7073"]
+    },
+    {
+      "location": "/var/log/audit/audit.log",
+      "queue": 49,
+      "vendor_integration": "auditd",
+      "outcome_case": "missing",
+      "expect_title": "",
+      "reject_prefixes": ["Successful user authentication", "Failed user authentication"],
+      "event": "type=USER_LOGIN msg=audit(1788688261.969:18671): pid=1137096 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='op=login acct=28696E76616C6964207573657229 exe=\"/usr/lib/openssh/sshd-session\" hostname=? addr=14.177.234.46 terminal=sshd' UID=\"root\" AUID=\"unset\""
+    },
+    {
+      "location": "/var/log/audit/audit.log",
+      "queue": 49,
+      "vendor_integration": "auditd",
+      "outcome_case": "unknown",
+      "expect_title": "",
+      "reject_prefixes": ["Successful user authentication", "Failed user authentication"],
+      "event": "type=USER_LOGIN msg=audit(1788688261.969:18671): pid=1137096 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='op=login acct=28696E76616C6964207573657229 exe=\"/usr/lib/openssh/sshd-session\" hostname=? addr=14.177.234.46 terminal=sshd res=unknown' UID=\"root\" AUID=\"unset\""
+    },
+    {
+      "location": "/var/log/audit/audit.log",
+      "queue": 49,
+      "vendor_integration": "auditd",
+      "outcome_case": "contradictory",
+      "expect_title": "",
+      "reject_prefixes": ["Successful user authentication", "Failed user authentication"],
+      "event": "type=USER_LOGIN msg=audit(1788688261.969:18671): pid=1137096 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='op=login acct=28696E76616C6964207573657229 exe=\"/usr/lib/openssh/sshd-session\" hostname=? addr=14.177.234.46 terminal=sshd res=failed res=success' UID=\"root\" AUID=\"unset\""
+    },
+    {
+      "location": "journald",
+      "event": "Sep 05 23:00:05 secure-vps modsecurity-crs[1003]: ModSecurity: Access denied with code 403 (phase 2). [id \"949110\"]",
+      "expect_title": "ModSecurity CRS detected or blocked a request"
+    },
+    {
+      "location": "/var/log/suricata/platform/eve-security.json",
+      "event": "{\"sensor.type\":\"suricata\",\"event_type\":\"alert\",\"alert\":{\"signature\":\"ET TEST IDS alert\",\"severity\":1}}",
+      "expect_title": "Suricata network IDS alert"
+    },
+    {
+      "location": "/var/log/trivy/events.ndjson",
+      "event": "{\"integration\":\"trivy\",\"event_type\":\"new\",\"severity\":\"CRITICAL\",\"finding_id\":\"CVE-2099-0001\"}",
+      "expect_title": "Trivy CRITICAL finding"
+    }
+  ],
+  "rules": [
+    {
+      "sigma_id": "platform-100400",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Host firewall dropped an inbound packet",
+        "description": "Migrated from 4.x rule 100400. nftables logged an inbound drop. Hunt tag: platform.firewall",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100400"]
+      },
+      "logsource": {"product": "platform-security", "category": "firewall"},
+      "detection": {
+        "condition": "selection",
+        "selection": {"event.original|contains": "nft-input-drop"}
+      }
+    },
+    {
+      "sigma_id": "platform-100403",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "Host authentication or privilege failure",
+        "description": "Migrated from 4.x rule 100403. Hunt tag: platform.auth",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100403"]
+      },
+      "logsource": {"product": "platform-security", "category": "authentication"},
+      "detection": {
+        "condition": "failed or invalid or auth_error or sudoers",
+        "failed": {"event.original|contains": "Failed"},
+        "invalid": {"event.original|contains": "invalid user"},
+        "auth_error": {"event.original|contains": "authentication error"},
+        "sudoers": {"event.original|contains": "not in sudoers"}
+      },
+      "mitre": {"tactic": ["TA0006"], "technique": ["T1110"], "subtechnique": []}
+    },
+    {
+      "sigma_id": "platform-100405",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "Identity or source-control authentication failure",
+        "description": "Migrated from 4.x rule 100405. Hunt tag: platform.auth",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100405"]
+      },
+      "logsource": {"product": "platform-security", "category": "authentication"},
+      "detection": {
+        "condition": "(authentik_server or authentik_worker or forgejo) and (failed or denied or unauthorized)",
+        "authentik_server": {"event.original|contains": "authentik-server"},
+        "authentik_worker": {"event.original|contains": "authentik-worker"},
+        "forgejo": {"event.original|contains": "forgejo"},
+        "failed": {"event.original|contains": "failed"},
+        "denied": {"event.original|contains": "denied"},
+        "unauthorized": {"event.original|contains": "unauthorized"}
+      }
+    },
+    {
+      "sigma_id": "platform-100416",
+      "enabled": true,
+      "status": "stable",
+      "level": "medium",
+      "metadata": {
+        "title": "Failed user authentication - {{ user.name }}",
+        "description": "A Linux audit USER_LOGIN record explicitly reported res=failed. This outcome-qualified rule prevents failed attempts from being presented as successful by local content.",
+        "author": "debian13-secure-platform"
+      },
+      "logsource": {"product": "platform-security", "category": "authentication"},
+      "detection": {
+        "condition": "user_login and failed and not succeeded and not ambiguous",
+        "user_login": {"event.code": "USER_LOGIN"},
+        "failed": {"event.original|re": "(?:^|\\s)res=failed(?:['\\s]|$)"},
+        "succeeded": {"event.original|re": "(?:^|\\s)res=success(?:['\\s]|$)"},
+        "ambiguous": {"event.original|re": "(?:^|\\s)res=[^\\s']+.*\\sres="}
+      },
+      "mitre": {"tactic": ["TA0006"], "technique": ["T1110"], "subtechnique": []}
+    },
+    {
+      "sigma_id": "platform-100417",
+      "enabled": true,
+      "status": "stable",
+      "level": "informational",
+      "metadata": {
+        "title": "Successful user authentication - {{ user.name }}",
+        "description": "A Linux audit USER_LOGIN record explicitly reported res=success. Success is never inferred from the USER_LOGIN event code alone.",
+        "author": "debian13-secure-platform"
+      },
+      "logsource": {"product": "platform-security", "category": "authentication"},
+      "detection": {
+        "condition": "user_login and succeeded and not failed and not ambiguous",
+        "user_login": {"event.code": "USER_LOGIN"},
+        "succeeded": {"event.original|re": "(?:^|\\s)res=success(?:['\\s]|$)"},
+        "failed": {"event.original|re": "(?:^|\\s)res=failed(?:['\\s]|$)"},
+        "ambiguous": {"event.original|re": "(?:^|\\s)res=[^\\s']+.*\\sres="}
+      }
+    },
+    {
+      "sigma_id": "platform-100406",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "ModSecurity CRS detected or blocked a request",
+        "description": "Migrated from 4.x rule 100406. Hunt tag: platform.waf",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100406"]
+      },
+      "logsource": {"product": "platform-security", "category": "web"},
+      "detection": {
+        "condition": "modsec or denied",
+        "modsec": {"event.original|contains": "ModSecurity"},
+        "denied": {"event.original|contains": "Access denied"}
+      }
+    },
+    {
+      "sigma_id": "platform-100407",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Traefik rejected or could not negotiate a request",
+        "description": "Migrated from 4.x rule 100407. Hunt tag: platform.waf",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100407"]
+      },
+      "logsource": {"product": "platform-security", "category": "web"},
+      "detection": {
+        "condition": "status_401 or status_403 or status_429 or tls_error or invalid_request",
+        "status_401": {"event.original|contains": "\"DownstreamStatus\":401"},
+        "status_403": {"event.original|contains": "\"DownstreamStatus\":403"},
+        "status_429": {"event.original|contains": "\"DownstreamStatus\":429"},
+        "tls_error": {"event.original|contains": "TLS handshake error"},
+        "invalid_request": {"event.original|contains": "invalid request"}
+      }
+    },
+    {
+      "sigma_id": "platform-100408",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Host package state changed",
+        "description": "Migrated from 4.x rule 100408. Hunt tag: platform.package_change",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100408"]
+      },
+      "logsource": {"product": "platform-security", "category": "package"},
+      "detection": {
+        "condition": "selection",
+        "selection": {"event.original|contains": "\"security.source\":\"packages\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100409",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "A host security control reported a failure",
+        "description": "Migrated from 4.x rule 100409. Hunt tag: platform.control_health",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100409"]
+      },
+      "logsource": {"product": "platform-security", "category": "host"},
+      "detection": {
+        "condition": "(sshd or auditd or fail2ban) and (failed or fatal or disabled)",
+        "sshd": {"event.original|contains": "sshd"},
+        "auditd": {"event.original|contains": "auditd"},
+        "fail2ban": {"event.original|contains": "fail2ban"},
+        "failed": {"event.original|contains": "failed"},
+        "fatal": {"event.original|contains": "fatal"},
+        "disabled": {"event.original|contains": "disabled"}
+      }
+    },
+    {
+      "sigma_id": "platform-100410",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "Suricata network IDS alert",
+        "description": "Migrated from 4.x rule 100410. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100410"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and alert",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"suricata\""},
+        "alert": {"event.original|contains": "\"event_type\":\"alert\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100411",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "Suricata network anomaly",
+        "description": "Migrated from 4.x rule 100411. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100411"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and anomaly",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"suricata\""},
+        "anomaly": {"event.original|contains": "\"event_type\":\"anomaly\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100412",
+      "enabled": true,
+      "status": "experimental",
+      "level": "medium",
+      "metadata": {
+        "title": "Zeek notice",
+        "description": "Migrated from 4.x rule 100412. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100412"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and notice",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"zeek\""},
+        "notice": {"event.original|contains": "\"zeek.log\":\"notice.log\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100413",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "Zeek intelligence match",
+        "description": "Migrated from 4.x rule 100413. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100413"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and intel",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"zeek\""},
+        "intel": {"event.original|contains": "\"zeek.log\":\"intel.log\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100414",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "Zeek signature match",
+        "description": "Migrated from 4.x rule 100414. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100414"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and signatures",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"zeek\""},
+        "signatures": {"event.original|contains": "\"zeek.log\":\"signatures.log\""}
+      }
+    },
+    {
+      "sigma_id": "platform-100415",
+      "enabled": true,
+      "status": "experimental",
+      "level": "low",
+      "metadata": {
+        "title": "Selected Zeek security metadata",
+        "description": "Migrated from 4.x rule 100415. Hunt tag: platform.network_ids",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100415"]
+      },
+      "logsource": {"product": "platform-security", "category": "network"},
+      "detection": {
+        "condition": "sensor and (weird or files or ssl or ssh)",
+        "sensor": {"event.original|contains": "\"sensor.type\":\"zeek\""},
+        "weird": {"event.original|contains": "\"zeek.log\":\"weird.log\""},
+        "files": {"event.original|contains": "\"zeek.log\":\"files.log\""},
+        "ssl": {"event.original|contains": "\"zeek.log\":\"ssl.log\""},
+        "ssh": {"event.original|contains": "\"zeek.log\":\"ssh.log\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100306",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "Trivy HIGH finding",
+        "description": "Migrated from 4.x rule 100306. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100306"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_new and high",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_new": {"event.original|contains": "\"event_type\":\"new\""},
+        "high": {"event.original|contains": "\"severity\":\"HIGH\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100307",
+      "enabled": true,
+      "status": "experimental",
+      "level": "critical",
+      "metadata": {
+        "title": "Trivy CRITICAL finding",
+        "description": "Migrated from 4.x rule 100307. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100307"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and event_new and critical",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "event_new": {"event.original|contains": "\"event_type\":\"new\""},
+        "critical": {"event.original|contains": "\"severity\":\"CRITICAL\""}
+      }
+    },
+    {
+      "sigma_id": "trivy-100308",
+      "enabled": true,
+      "status": "experimental",
+      "level": "high",
+      "metadata": {
+        "title": "Trivy scan failed",
+        "description": "Migrated from 4.x rule 100308. Hunt tag: trivy",
+        "author": "debian13-secure-platform",
+        "references": ["4.x:100308"]
+      },
+      "logsource": {"product": "platform-security", "category": "vulnerability"},
+      "detection": {
+        "condition": "integration and scan_error",
+        "integration": {"event.original|contains": "\"integration\":\"trivy\""},
+        "scan_error": {"event.original|contains": "\"event_type\":\"scan_error\""}
+      }
+    },
+    {
+      "sigma_id": "rustinel-100500",
+      "enabled": true,
+      "status": "stable",
+      "level": "low",
+      "metadata": {
+        "title": "Rustinel endpoint detection alert",
+        "description": "Normalizes ECS Rustinel EDR alerts collected from the host sensor. The source rule identity and severity remain searchable fields.",
+        "author": "debian13-secure-platform",
+        "references": ["Rustinel Linux Essential"]
+      },
+      "logsource": {"product": "platform-security", "category": "endpoint"},
+      "detection": {
+        "condition": "edr_alert and rule_identity and severity and engine and dataset",
+        "edr_alert": {"event.module": "edr"},
+        "rule_identity": {"rule.name|exists": true, "rule.id|exists": true},
+        "severity": {"edr.rule.severity|exists": true},
+        "engine": {"edr.rule.engine|exists": true},
+        "dataset": {"event.dataset|startswith": "edr."}
+      }
+    }
+  ]
+}

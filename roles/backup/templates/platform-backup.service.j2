@@ -1,0 +1,16 @@
+[Unit]
+Description=Application-consistent resticprofile backup to Backblaze B2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+Environment=HOME=/root
+ExecStart=/usr/local/bin/resticprofile -c /etc/resticprofile/profiles.yaml backup
+TimeoutStartSec=7200
+
+[Install]
+WantedBy=multi-user.target

@@ -97,3 +97,9 @@
           <log_format>json</log_format>
           <label key="scanner.type">trivy</label>
         </localfile>
+        <localfile>
+          <location>/var/log/rustinel/alerts.json.*</location>
+          <log_format>json</log_format>
+          <label key="sensor.type">rustinel</label>
+          <label key="event.module">edr</label>
+        </localfile>

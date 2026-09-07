@@ -1,0 +1,415 @@
+{% raw %}
+{
+  "rules": [
+    {
+      "alert": "platform-root-filesystem-85",
+      "alertType": "METRIC_BASED_ALERT",
+      "annotations": {
+        "description": "Root filesystem utilization is {{$value}}.",
+        "summary": "Root disk above 85%"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [
+                  {
+                    "metricName": "system.filesystem.utilization",
+                    "spaceAggregation": "max",
+                    "timeAggregation": "avg"
+                  }
+                ],
+                "filter": {"expression": "mountpoint = '/'"},
+                "name": "A",
+                "signal": "metrics",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder",
+          "unit": "percentunit"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "critical",
+              "op": "above",
+              "target": 0.85
+            }
+          ]
+        }
+      },
+      "description": "Root filesystem usage on this node. Wazuh and SigNoz volumes live here unless they have their own mounts.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+      "labels": {"severity": "critical", "team": "platform"},
+      "notificationSettings": {
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "2h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-var-lib-filesystem-85",
+      "alertType": "METRIC_BASED_ALERT",
+      "annotations": {
+        "description": "Filesystem {{$mountpoint}} utilization is {{$value}}.",
+        "summary": "svc-signoz or Wazuh disk above 85%"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [
+                  {
+                    "metricName": "system.filesystem.utilization",
+                    "spaceAggregation": "max",
+                    "timeAggregation": "avg"
+                  }
+                ],
+                "filter": {
+                  "expression": "mountpoint CONTAINS 'svc-signoz' OR mountpoint CONTAINS 'svc-wazuh' OR mountpoint = '/var/lib'"
+                },
+                "groupBy": [
+                  {
+                    "fieldContext": "attribute",
+                    "fieldDataType": "string",
+                    "name": "mountpoint"
+                  }
+                ],
+                "legend": "{{mountpoint}}",
+                "name": "A",
+                "signal": "metrics",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder",
+          "unit": "percentunit"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "critical",
+              "op": "above",
+              "target": 0.85
+            }
+          ]
+        }
+      },
+      "description": "Fires when a dedicated /var/lib, SigNoz, or Wazuh mount fills. Silent when those paths share the root filesystem.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+      "labels": {"severity": "critical", "team": "platform"},
+      "notificationSettings": {
+        "groupBy": ["mountpoint"],
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "2h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-clickhouse-memory",
+      "alertType": "METRIC_BASED_ALERT",
+      "annotations": {
+        "description": "ClickHouse container memory is {{$value}} bytes.",
+        "summary": "ClickHouse memory near the compose cap"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [
+                  {
+                    "metricName": "container.memory.usage.total",
+                    "spaceAggregation": "max",
+                    "timeAggregation": "avg"
+                  }
+                ],
+                "filter": {"expression": "container.name CONTAINS 'clickhouse'"},
+                "groupBy": [
+                  {
+                    "fieldContext": "resource",
+                    "fieldDataType": "string",
+                    "name": "container.name"
+                  }
+                ],
+                "legend": "{{container.name}}",
+                "name": "A",
+                "signal": "metrics",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "warning",
+              "op": "above",
+              "target": {% endraw %}{{ (signoz_clickhouse_memory_bytes | int * 0.9) | int }}{% raw %}
+            }
+          ]
+        }
+      },
+      "description": "Podman memory for ClickHouse. Merge pressure on this host shows up as the container approaching its mem_limit.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+      "labels": {"severity": "warning", "team": "platform"},
+      "notificationSettings": {
+        "groupBy": ["container.name"],
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "1h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-otelcol-export-failures",
+      "alertType": "LOGS_BASED_ALERT",
+      "annotations": {
+        "description": "Host collector export failures in the last 5 minutes: {{$value}}.",
+        "summary": "otelcol-contrib failed to export"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [{"expression": "count()"}],
+                "filter": {
+                  "expression": "body CONTAINS 'export' AND (body CONTAINS 'fail' OR body CONTAINS 'error' OR body CONTAINS 'drop')"
+                },
+                "name": "A",
+                "signal": "logs",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "warning",
+              "op": "above",
+              "target": 0
+            }
+          ]
+        }
+      },
+      "description": "Collector self-metrics stay off. Warning journals from otelcol-contrib are the export-failure signal.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m", "frequency": "1m"}},
+      "labels": {"severity": "warning", "team": "platform"},
+      "notificationSettings": {
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "1h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-failed-units",
+      "alertType": "LOGS_BASED_ALERT",
+      "annotations": {
+        "description": "A platform or sensor unit entered a failed state ({{$value}} matching logs).",
+        "summary": "secure-* or sensor unit failed"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [{"expression": "count()"}],
+                "filter": {
+                  "expression": "body CONTAINS 'Failed with result' OR body CONTAINS 'entered failed state' OR body CONTAINS 'Unit entered failed state'"
+                },
+                "name": "A",
+                "signal": "logs",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "critical",
+              "op": "above",
+              "target": 0
+            }
+          ]
+        }
+      },
+      "description": "Uses the warning-level journald/operations feed already shipped to SigNoz.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m", "frequency": "1m"}},
+      "labels": {"severity": "critical", "team": "platform"},
+      "notificationSettings": {
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "30m"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-traefik-5xx",
+      "alertType": "TRACES_BASED_ALERT",
+      "annotations": {
+        "description": "Traefik 5xx rate is {{$value}}%.",
+        "summary": "Public entrypoint 5xx above 5%"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [{"expression": "count()", "disabled": true}],
+                "filter": {"expression": "service.name = 'traefik' AND http.status_code >= 500"},
+                "name": "A",
+                "signal": "traces",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            },
+            {
+              "spec": {
+                "aggregations": [{"expression": "count()", "disabled": true}],
+                "filter": {"expression": "service.name = 'traefik'"},
+                "name": "B",
+                "signal": "traces",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            },
+            {
+              "spec": {
+                "expression": "(A / B) * 100",
+                "legend": "traefik 5xx percent",
+                "name": "F1",
+                "type": "builder_formula"
+              }
+            }
+          ],
+          "queryType": "builder",
+          "unit": "percent"
+        },
+        "selectedQueryName": "F1",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "warning",
+              "op": "above",
+              "target": 5
+            }
+          ]
+        }
+      },
+      "description": "Traefik 5xx share on the public entrypoint. Security detections stay in Wazuh.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+      "labels": {"severity": "warning", "team": "platform"},
+      "notificationSettings": {
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "1h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    },
+    {
+      "alert": "platform-traefik-p95-latency",
+      "alertType": "TRACES_BASED_ALERT",
+      "annotations": {
+        "description": "Traefik p95 latency crossed {{$threshold}}s ({{$value}}).",
+        "summary": "Public entrypoint p95 above 2s"
+      },
+      "condition": {
+        "compositeQuery": {
+          "panelType": "graph",
+          "queries": [
+            {
+              "spec": {
+                "aggregations": [{"expression": "p95(duration_nano)"}],
+                "filter": {"expression": "service.name = 'traefik'"},
+                "legend": "traefik p95",
+                "name": "A",
+                "signal": "traces",
+                "stepInterval": 60,
+                "type": "builder_query"
+              }
+            }
+          ],
+          "queryType": "builder",
+          "unit": "ns"
+        },
+        "selectedQueryName": "A",
+        "thresholds": {
+          "kind": "basic",
+          "spec": [
+            {
+              "channels": [],
+              "matchType": "at_least_once",
+              "name": "warning",
+              "op": "above",
+              "target": 2,
+              "targetUnit": "s"
+            }
+          ]
+        }
+      },
+      "description": "p95 span duration for Traefik. Empty notification channels; add a channel in the SigNoz UI when you want pages.",
+      "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+      "labels": {"severity": "warning", "team": "platform"},
+      "notificationSettings": {
+        "renotify": {"alertStates": ["firing"], "enabled": true, "interval": "1h"},
+        "usePolicy": false
+      },
+      "ruleType": "threshold_rule",
+      "schemaVersion": "v2alpha1",
+      "version": "v5"
+    }
+  ]
+}
+{% endraw %}

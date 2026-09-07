@@ -14,3 +14,90 @@ SecRule REQUEST_URI "!@rx (?:^|/)(?:info/refs|git-upload-pack|git-receive-pack)(
   ctl:ruleRemoveById=920440,\
   ctl:ruleRemoveById=930130,\
   ctl:ruleRemoveById=930140"
+
+# SigNoz's logs explorer stores its structured query as a deliberately
+# double-encoded URL argument.  The decoded JSON contains SQL-like operators
+# (AND, count(), quoted values), which can trip CRS SQL-injection signatures.
+# Keep CRS enabled everywhere else and remove only SQLi inspection from these
+# three SigNoz-owned arguments on the exact explorer endpoint.
+SecRule REQUEST_HEADERS:Host "@streq {{ observe_fqdn }}" \
+ "id:10011,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "@streq /logs/logs-explorer" \
+ "t:none,\
+  ctl:ruleRemoveTargetById=942100;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942110;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942120;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942130;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942150;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942180;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942200;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942210;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942230;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942240;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942260;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942300;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942340;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942350;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942360;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942370;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942380;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942390;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942400;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942410;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942420;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942430;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942440;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942450;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942460;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942500;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942510;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942550;ARGS:compositeQuery,\
+  ctl:ruleRemoveTargetById=942100;ARGS:options,\
+  ctl:ruleRemoveTargetById=942110;ARGS:options,\
+  ctl:ruleRemoveTargetById=942120;ARGS:options,\
+  ctl:ruleRemoveTargetById=942130;ARGS:options,\
+  ctl:ruleRemoveTargetById=942150;ARGS:options,\
+  ctl:ruleRemoveTargetById=942180;ARGS:options,\
+  ctl:ruleRemoveTargetById=942200;ARGS:options,\
+  ctl:ruleRemoveTargetById=942210;ARGS:options,\
+  ctl:ruleRemoveTargetById=942230;ARGS:options,\
+  ctl:ruleRemoveTargetById=942240;ARGS:options,\
+  ctl:ruleRemoveTargetById=942260;ARGS:options,\
+  ctl:ruleRemoveTargetById=942300;ARGS:options,\
+  ctl:ruleRemoveTargetById=942340;ARGS:options,\
+  ctl:ruleRemoveTargetById=942350;ARGS:options,\
+  ctl:ruleRemoveTargetById=942360;ARGS:options,\
+  ctl:ruleRemoveTargetById=942370;ARGS:options,\
+  ctl:ruleRemoveTargetById=942380;ARGS:options,\
+  ctl:ruleRemoveTargetById=942390;ARGS:options,\
+  ctl:ruleRemoveTargetById=942400;ARGS:options,\
+  ctl:ruleRemoveTargetById=942410;ARGS:options,\
+  ctl:ruleRemoveTargetById=942420;ARGS:options,\
+  ctl:ruleRemoveTargetById=942430;ARGS:options,\
+  ctl:ruleRemoveTargetById=942440;ARGS:options,\
+  ctl:ruleRemoveTargetById=942450;ARGS:options,\
+  ctl:ruleRemoveTargetById=942500;ARGS:options,\
+  ctl:ruleRemoveTargetById=942510;ARGS:options,\
+  ctl:ruleRemoveTargetById=942550;ARGS:options,\
+  ctl:ruleRemoveTargetById=942100;ARGS:options,\
+  ctl:ruleRemoveTargetById=942100;ARGS:activeLogId"
+
+# Wazuh Dashboard Discover legitimately probes the signed 32-bit upper bound
+# (2147483647) in this internal request. CRS 942220 classifies that value as
+# an integer-overflow probe. Limit the exclusion to the security host, exact
+# endpoint, exact JSON argument, and the single offending rule.
+SecRule REQUEST_HEADERS:Host "@streq {{ security_fqdn }}" \
+ "id:10012,\
+  phase:1,\
+  pass,\
+  nolog,\
+  t:none,\
+  chain"
+SecRule REQUEST_URI "@streq /internal/search/opensearch-with-long-numerals" \
+ "t:none,\
+  ctl:ruleRemoveTargetById=942220;ARGS:json.params.body.highlight.fragment_size"

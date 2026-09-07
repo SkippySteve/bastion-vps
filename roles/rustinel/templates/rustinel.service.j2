@@ -1,0 +1,25 @@
+[Unit]
+Description=Rustinel endpoint detection sensor
+After=local-fs.target network.target
+
+[Service]
+Type=simple
+User={{ rustinel_service_user }}
+Group={{ rustinel_service_user }}
+ExecStart=/opt/rustinel/rustinel run --config /etc/rustinel/config.toml --no-console
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/rustinel /var/lib/rustinel
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

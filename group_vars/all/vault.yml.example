@@ -43,3 +43,15 @@ wazuh_api_password: "CHANGE_ME"
 # cloudflare_api_token: "CHANGE_ME"
 # cloudflare_api_key: "CHANGE_ME"
 # cloudflare_email: "CHANGE_ME@example.com"
+
+# Optional off-box backups to Backblaze B2 over the S3 API. Required when
+# backup_offsite_enabled is true. Do not use restic's native b2: backend.
+# backup_b2_key_id: "CHANGE_ME"
+# backup_b2_application_key: "CHANGE_ME"
+# backup_restic_password: "CHANGE_ME"
+# backup_b2_bucket: "CHANGE_ME"
+# backup_b2_endpoint: "s3.us-west-004.backblazeb2.com"
+
+# Optional SigNoz API token from Settings -> API Keys. When empty, Ansible
+# skips creating the managed operations alerts.
+# signoz_api_token: "CHANGE_ME"

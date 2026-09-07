@@ -186,6 +186,60 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Require off-box backup secrets when backups are enabled
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default='') | length > 0
+      - not (lookup('vars', item, default='') is search('CHANGE_ME'))
+    fail_msg: >-
+      backup_offsite_enabled needs backup_b2_key_id, backup_b2_application_key,
+      backup_restic_password, backup_b2_bucket, and backup_b2_endpoint in the
+      vault or group_vars.
+  loop:
+    - backup_b2_key_id
+    - backup_b2_application_key
+    - backup_restic_password
+    - backup_b2_bucket
+    - backup_b2_endpoint
+  no_log: true
+  when: backup_offsite_enabled | bool
+
+- name: Require a Backblaze S3 endpoint, not the native b2 backend
+  ansible.builtin.assert:
+    that:
+      - backup_b2_endpoint is match('^s3[.][A-Za-z0-9._-]+[.]backblazeb2[.]com$')
+      - backup_b2_bucket is match('^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$')
+      - backup_b2_prefix is match('^(?:[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)*(?:/[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)*)*)?$')
+      - "'/../' not in ('/' ~ backup_b2_prefix ~ '/')"
+      - backup_restic_password | length >= 16
+    fail_msg: >-
+      Use the Backblaze S3 endpoint (s3.<region>.backblazeb2.com), not b2:.
+      The restic native b2 backend hangs with poor errors on this host.
+  when: backup_offsite_enabled | bool
+  no_log: true
+
+- name: Restrict destructive backup work directories to dedicated children
+  ansible.builtin.assert:
+    that:
+      - item is match('^/var/lib/platform-backup/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$')
+      - item != '/var/lib/platform-backup'
+      - "'/../' not in (item ~ '/')"
+      - "'//' not in item"
+    fail_msg: >-
+      Backup work directories must be absolute, canonical-looking children of
+      /var/lib/platform-backup; the dedicated root itself is never allowed.
+  loop:
+    - "{{ backup_staging_dir }}"
+    - "{{ backup_restore_dir }}"
+  when: backup_offsite_enabled | bool
+
+- name: Keep backup staging and restore directories separate
+  ansible.builtin.assert:
+    that:
+      - backup_staging_dir != backup_restore_dir
+    fail_msg: backup_staging_dir and backup_restore_dir must be different paths.
+  when: backup_offsite_enabled | bool
+
 - name: Explain the staged firewall behavior
   ansible.builtin.debug:
     msg: >-

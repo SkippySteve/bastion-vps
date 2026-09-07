@@ -1,3 +1,5 @@
+<!-- Historical 4.x mapping only. Wazuh 5.0.0-beta5 does not evaluate this file.
+     Live detections are Content Manager Sigma in roles/wazuh_agent/files/engine/rules.json. -->
 <group name="platform_security,">
   <rule id="100400" level="5">
     <program_name>^kernel$</program_name>
@@ -36,6 +38,22 @@
     <match type="pcre2">(?i)(failed|failure|denied|invalid|unauthorized|forbidden|locked)</match>
     <description>Identity or source-control authentication failure.</description>
     <group>platform_container,platform_auth,authentication_failed,</group>
+  </rule>
+
+  <rule id="100416" level="9">
+    <decoded_as>auditd</decoded_as>
+    <field name="audit.type">^USER_LOGIN$</field>
+    <field name="audit.res">^failed$</field>
+    <description>Failed user authentication - $(audit.acct).</description>
+    <group>platform_auth,authentication_failed,</group>
+  </rule>
+
+  <rule id="100417" level="3">
+    <decoded_as>auditd</decoded_as>
+    <field name="audit.type">^USER_LOGIN$</field>
+    <field name="audit.res">^success$</field>
+    <description>Successful user authentication - $(audit.acct).</description>
+    <group>platform_auth,authentication_success,</group>
   </rule>
 
   <rule id="100406" level="10">

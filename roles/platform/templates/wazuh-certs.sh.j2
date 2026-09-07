@@ -4,7 +4,8 @@ set -euo pipefail
 
 root="{{ wazuh_stack_dir }}"
 subj="/C=US/L=California/O=Wazuh/OU=Wazuh"
-days=3650
+ca_days=3650
+node_days=825
 
 mkdir -p \
   "$root/config/root-ca/certs" \
@@ -12,24 +13,41 @@ mkdir -p \
   "$root/config/wazuh_manager/certs" \
   "$root/config/wazuh_dashboard/certs"
 
-if [[ -f $root/config/root-ca/certs/root-ca.pem ]]; then
-  chmod 644 "$root"/config/root-ca/certs/*.pem \
-    "$root"/config/wazuh_indexer/certs/*.pem \
-    "$root"/config/wazuh_manager/certs/*.pem \
-    "$root"/config/wazuh_dashboard/certs/*.pem
-  exit 0
-fi
-
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-openssl req -x509 -newkey rsa:4096 -nodes -days "$days" \
-  -keyout "$root/config/root-ca/certs/root-ca.key" \
-  -out "$root/config/root-ca/certs/root-ca.pem" \
-  -subj "${subj}/CN=root-ca"
+ca_key="$root/config/root-ca/certs/root-ca.key"
+ca_cert="$root/config/root-ca/certs/root-ca.pem"
+if [[ -f "$ca_cert" && ! -f "$ca_key" ]]; then
+  echo "Existing Wazuh CA certificate has no private key; refusing to replace the trust root" >&2
+  exit 1
+fi
+if [[ ! -f "$ca_cert" ]]; then
+  openssl req -x509 -newkey rsa:4096 -nodes -days "$ca_days" \
+    -keyout "$ca_key" -out "$ca_cert" -subj "${subj}/CN=root-ca" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:1" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -addext "subjectKeyIdentifier=hash"
+  echo "generated root-ca certificate"
+fi
+
+# Python/OpenSSL and the Wazuh JVM both require an explicit CA key-usage
+# extension. Do not silently continue with an unusable trust root.
+if ! openssl x509 -in "$ca_cert" -noout -text | grep -Fq 'CA:TRUE' || \
+   ! openssl x509 -in "$ca_cert" -noout -text | grep -Fq 'Certificate Sign'; then
+  echo "Existing Wazuh CA lacks CA/keyCertSign extensions; replace the CA and all signed certificates before continuing" >&2
+  exit 1
+fi
 
 make_node() {
-  local cn="$1" key="$2" cert="$3"
+  local cn="$1" key="$2" cert="$3" san="$4" verify_san="$4"
+  verify_san="${verify_san/IP:/IP Address:}"
+  if [[ -f "$key" && -f "$cert" ]] && \
+     openssl verify -CAfile "$ca_cert" "$cert" >/dev/null 2>&1 && \
+     openssl x509 -checkend 2592000 -noout -in "$cert" >/dev/null 2>&1 && \
+     { [[ -z "$verify_san" ]] || openssl x509 -noout -ext subjectAltName -in "$cert" | grep -Fq "$verify_san"; }; then
+    return
+  fi
   cat >"$tmp/${cn}.cnf" <<EOF
 [req]
 default_bits = 4096
@@ -49,32 +67,42 @@ CN = ${cn}
 basicConstraints = CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
-subjectAltName = DNS:${cn}
+subjectAltName = DNS:${cn}${san:+, ${san}}
 EOF
   openssl req -new -newkey rsa:4096 -nodes \
     -keyout "$key" -out "$tmp/${cn}.csr" -config "$tmp/${cn}.cnf"
   openssl x509 -req -in "$tmp/${cn}.csr" \
-    -CA "$root/config/root-ca/certs/root-ca.pem" \
-    -CAkey "$root/config/root-ca/certs/root-ca.key" \
-    -CAcreateserial -days "$days" -out "$cert" \
+    -CA "$ca_cert" \
+    -CAkey "$ca_key" \
+    -CAcreateserial -days "$node_days" -out "$cert" \
     -extfile "$tmp/${cn}.cnf" -extensions v3_req
+  echo "generated ${cn} certificate"
 }
 
 make_node wazuh.indexer \
   "$root/config/wazuh_indexer/certs/wazuh.indexer-key.pem" \
-  "$root/config/wazuh_indexer/certs/wazuh.indexer.pem"
+  "$root/config/wazuh_indexer/certs/wazuh.indexer.pem" \
+  "IP:127.0.0.1"
 make_node admin \
   "$root/config/wazuh_indexer/certs/admin-key.pem" \
-  "$root/config/wazuh_indexer/certs/admin.pem"
+  "$root/config/wazuh_indexer/certs/admin.pem" \
+  ""
 make_node wazuh.manager \
   "$root/config/wazuh_manager/certs/wazuh.manager-key.pem" \
-  "$root/config/wazuh_manager/certs/wazuh.manager.pem"
+  "$root/config/wazuh_manager/certs/wazuh.manager.pem" \
+  ""
 make_node wazuh.dashboard \
   "$root/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem" \
-  "$root/config/wazuh_dashboard/certs/wazuh.dashboard.pem"
+  "$root/config/wazuh_dashboard/certs/wazuh.dashboard.pem" \
+  ""
 
-chmod 640 "$root"/config/root-ca/certs/*.key
+chmod 640 "$root"/config/root-ca/certs/*.key \
+  "$root"/config/wazuh_manager/certs/*-key.pem \
+  "$root"/config/wazuh_dashboard/certs/*-key.pem
+chmod 644 "$root"/config/wazuh_indexer/certs/*-key.pem
+chmod 644 "$root/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem"
 chmod 644 "$root"/config/root-ca/certs/*.pem \
-  "$root"/config/wazuh_indexer/certs/*.pem \
-  "$root"/config/wazuh_manager/certs/*.pem \
-  "$root"/config/wazuh_dashboard/certs/*.pem
+  "$root"/config/wazuh_indexer/certs/wazuh.indexer.pem \
+  "$root"/config/wazuh_indexer/certs/admin.pem \
+  "$root"/config/wazuh_manager/certs/wazuh.manager.pem \
+  "$root"/config/wazuh_dashboard/certs/wazuh.dashboard.pem

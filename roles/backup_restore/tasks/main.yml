@@ -1,0 +1,21 @@
+---
+- name: Require off-box backups to be configured before restore
+  ansible.builtin.assert:
+    that:
+      - backup_offsite_enabled | bool
+      - backup_restore_confirm | bool
+    fail_msg: >-
+      Restore needs backup_offsite_enabled=true and backup_restore_confirm=true.
+      The snapshot is written to {{ backup_restore_dir }} and never copied onto
+      live volumes by this playbook.
+
+- name: Restore the latest restic snapshot to the staging directory
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/platform-backup-restore
+  register: backup_restore_run
+  changed_when: true
+
+- name: Show where the restored dumps landed
+  ansible.builtin.debug:
+    msg: "{{ backup_restore_run.stdout_lines | default([backup_restore_dir]) }}"

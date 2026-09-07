@@ -156,6 +156,7 @@ signoz_grpc_port: 14317
 signoz_http_port: 14318
 signoz_ui_port: 18080
 wazuh_dashboard_port: 15601
+wazuh_indexer_port: 19200
 waf_http_port: 18090
 waf_status_port: 18091
 host_otlp_grpc_port: 4317
@@ -206,6 +207,21 @@ wazuh_agent_apt_repo: "deb [signed-by=/usr/share/keyrings/wazuh.asc] https://pac
 wazuh_agent_gpg_key: "https://packages-staging.xdrsiem.wazuh.info/key/GPG-KEY-WAZUH"
 # Set true once to drop every svc-wazuh volume after a failed 5.x first start.
 wazuh_reset_store: false
+
+rustinel_enabled: true
+# Wazuh certificates are stable and idempotent by default. Set true only
+# during a planned certificate rotation; the platform role then recreates
+# the dependent node/client certificates and restarts Wazuh.
+wazuh_rotate_certificates: false
+rustinel_version: "1.4.1"
+rustinel_rules_version: "0.3.0"
+rustinel_binary_checksums:
+  amd64: "9a111a2f6b20b0966e87cdb6eafda6eee9d8d74f571ad8dddf9e1e72031189ae"
+  arm64: "05373cf9856db06e6d4b85522433aacb79b81d3346a2c1d1b11848725ebafeed"
+rustinel_linux_essential_sha256: "98a349bab281dd25679389abff9b62323c4528c217c3ffad8bdec30d4c0cd7af"
+rustinel_service_user: rustinel
+rustinel_alert_dir: /var/log/rustinel
+rustinel_state_dir: /var/lib/rustinel
 otelcol_version: "0.159.0"
 zeek_major_version: "8.0"
 silk_version: "3.24.2"
@@ -315,6 +331,9 @@ artifact_checksums:
   histogram_quantile:
     amd64: "33997073eb6d82b7be4f27f9fc8ec9e28a395e0f20674d5d54bb2fa28a75488d"
     arm64: "e5605ebffa82a450ebbcdf6cf19dad546e1e40d52dbf3e03cfd2d2d5b7394211"
+  resticprofile:
+    amd64: "5fecd20de21811a750a4d61e841b2258fdf018bbfffad136c96078df27b452df"
+    arm64: "0d547cc0c34a83a8c1d884271a70340da90fe8750ac4a2d7de8ed7aa1d9bb9c7"
   silk: "9ea9c1391f9c1ba14394af68b2bd7e66bf73b664c3cee342c5a39e5b13e45398"
   libfixbuf: "106b8e1e560928a4dc91d8264326bd2463767570d77417535964f450de1f972e"
   yaf: "fb581317124a2a5064c17e211cc2a0226a41f606c2135a5a5c6f672ecf6e4c9f"
@@ -336,3 +355,25 @@ scrapecast_auth_mode: "off"
 # Packages read token for svc-scrapecast. Create it in Forgejo after the
 # first repo exists. Empty means Ansible renders the stack but does not start it.
 scrapecast_registry_pull_token: ""
+
+# Off-box backups. Default off so a full playbook run does not need B2
+# secrets. When true, resticprofile dumps application-consistent staging
+# files and sends them to Backblaze B2 over the S3 API. Restore is a
+# separate --tags restore run and never overwrites live volumes.
+backup_offsite_enabled: false
+backup_restore_confirm: false
+backup_resticprofile_version: "0.33.1"
+backup_b2_endpoint: ""
+backup_b2_bucket: ""
+backup_b2_prefix: platform
+backup_schedule: "*-*-* 02:30:00"
+backup_check_schedule: "Sun *-*-* 04:15:00"
+backup_keep_daily: 7
+backup_keep_weekly: 4
+backup_keep_monthly: 6
+backup_include_silk: false
+backup_staging_dir: /var/lib/platform-backup/staging
+backup_restore_dir: /var/lib/platform-backup/restore
+# Optional SigNoz API token for managing alert rules as code. Empty skips
+# alert upsert and leaves the UI without these rules until you add a token.
+signoz_api_token: ""

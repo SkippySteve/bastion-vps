@@ -1,0 +1,26 @@
+#!/bin/bash
+# Restore the latest restic snapshot into a staging directory. This never
+# overwrites live Podman volumes.
+set -euo pipefail
+
+RESTORE_DIR="{{ backup_restore_dir }}"
+BACKUP_ROOT="/var/lib/platform-backup"
+umask 077
+
+safe_reset_dir() {
+  local requested="$1" canonical
+  [[ "$requested" = /* ]] || { echo "Refusing non-absolute restore path: $requested" >&2; exit 1; }
+  canonical="$(realpath -m -- "$requested")"
+  case "$canonical" in
+    "$BACKUP_ROOT"/*) ;;
+    *) echo "Refusing restore path outside $BACKUP_ROOT: $canonical" >&2; exit 1 ;;
+  esac
+  [[ "$canonical" != "$BACKUP_ROOT" ]] || { echo "Refusing to remove $BACKUP_ROOT" >&2; exit 1; }
+  rm -rf --one-file-system -- "$canonical"
+  install -d -m 0700 -- "$canonical"
+  printf '%s\n' "$canonical"
+}
+
+RESTORE_DIR="$(safe_reset_dir "$RESTORE_DIR")"
+/usr/local/bin/resticprofile -c /etc/resticprofile/profiles.yaml restore latest --target "$RESTORE_DIR"
+printf 'Restored the latest snapshot to %s. Inspect dumps there. Do not copy them onto live volumes from this script.\n' "$RESTORE_DIR"

@@ -87,6 +87,7 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [telemetry, alerts, signoz_alerts]
 
 - name: Create the SigNoz alert config directory
   ansible.builtin.file:
@@ -95,6 +96,7 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [telemetry, alerts, signoz_alerts]
 
 - name: Install the SigNoz alert upsert helper
   ansible.builtin.copy:
@@ -103,6 +105,7 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [telemetry, alerts, signoz_alerts]
 
 - name: Render SigNoz operations alert rules
   ansible.builtin.template:
@@ -111,6 +114,7 @@
     owner: root
     group: root
     mode: "0640"
+  tags: [telemetry, alerts, signoz_alerts]
 
 - name: Warn when SigNoz alert rules cannot be applied
   ansible.builtin.debug:
@@ -119,9 +123,11 @@
       ClickHouse, collector, unit-failure, and Traefik alerts were not
       upserted. Create an API key in SigNoz and rerun --tags telemetry.
   when: signoz_api_token | default('') | length == 0
+  tags: [telemetry, alerts, signoz_alerts]
 
 - name: Apply managed SigNoz operations alerts
   when: signoz_api_token | default('') | length > 0
+  tags: [telemetry, alerts, signoz_alerts]
   block:
     - name: Confirm the SigNoz API belongs to the running rootless container
       ansible.builtin.command:

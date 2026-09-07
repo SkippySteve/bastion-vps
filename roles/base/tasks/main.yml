@@ -235,19 +235,23 @@
     group: root
     mode: "0644"
   notify: Restart SSH
+  tags: [base, ssh]
 
 - name: Remove the superseded late-loading SSH drop-in
   ansible.builtin.file:
     path: /etc/ssh/sshd_config.d/90-secure-platform.conf
     state: absent
   notify: Restart SSH
+  tags: [base, ssh]
 
 - name: Validate the complete SSH daemon configuration
   ansible.builtin.command: /usr/sbin/sshd -t
   changed_when: false
+  tags: [base, ssh]
 
 - name: Apply SSH daemon changes before dropping the multiplexer
   ansible.builtin.meta: flush_handlers
+  tags: [base, ssh]
 
 - name: Stop leftover SSH and TLS multiplexer
   ansible.builtin.systemd_service:
@@ -281,9 +285,11 @@
     group: root
     mode: "0600"
     validate: "/usr/sbin/nft -c -f %s"
+  tags: [base, firewall]
 
 - name: Activate the nftables policy after explicit confirmation
   when: firewall_lockdown_confirm | bool
+  tags: [base, firewall]
   block:
     - name: Install the confirmed nftables policy
       ansible.builtin.copy:
@@ -303,3 +309,4 @@
 
 - name: Apply bootstrap service changes now
   ansible.builtin.meta: flush_handlers
+  tags: [base, firewall]

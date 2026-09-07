@@ -86,6 +86,7 @@
 
 - name: Configure Suricata
   when: enable_suricata | bool
+  tags: [sensors, suricata]
   block:
     - name: Disable the distribution single-interface Suricata unit
       ansible.builtin.systemd_service:
@@ -127,6 +128,7 @@
 
 - name: Configure the official Zeek Debian 13 repository
   when: enable_zeek | bool
+  tags: [sensors, zeek]
   block:
     - name: Install the Zeek repository key
       ansible.builtin.get_url:
@@ -167,6 +169,7 @@
 
 - name: Build and configure the SiLK and YAF flow pipeline
   when: enable_silk | bool
+  tags: [sensors, silk, yaf]
   block:
     - name: Download pinned CERT NetSA sources
       ansible.builtin.get_url:
@@ -350,6 +353,7 @@
   ansible.builtin.command: /usr/bin/suricata -T -c /etc/suricata/suricata.yaml
   changed_when: false
   when: enable_suricata | bool
+  tags: [sensors, suricata]
 
 - name: Validate SiLK sensor mappings
   ansible.builtin.command: >-
@@ -357,6 +361,7 @@
     --site-config-file=/etc/silk/silk.conf --verify-sensor-config
   changed_when: false
   when: enable_silk | bool
+  tags: [sensors, silk, yaf]
 
 - name: Enable Suricata on every capture interface
   ansible.builtin.systemd_service:
@@ -364,6 +369,7 @@
     enabled: true
     state: started
   when: enable_suricata | bool
+  tags: [sensors, suricata]
 
 - name: Enable Zeek on each capture interface
   ansible.builtin.systemd_service:
@@ -372,6 +378,7 @@
     state: started
   loop: "{{ sensor_interfaces | unique }}"
   when: enable_zeek | bool
+  tags: [sensors, zeek]
 
 - name: Enable the SiLK flow packer
   ansible.builtin.systemd_service:
@@ -379,6 +386,7 @@
     enabled: true
     state: started
   when: enable_silk | bool
+  tags: [sensors, silk, yaf]
 
 - name: Enable YAF on each capture interface
   ansible.builtin.systemd_service:
@@ -387,3 +395,4 @@
     state: started
   loop: "{{ sensor_interfaces | unique }}"
   when: enable_silk | bool
+  tags: [sensors, silk, yaf]

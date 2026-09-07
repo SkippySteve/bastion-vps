@@ -1,560 +1,564 @@
 # Debian 13 secure Podman platform
 
-Ansible recipes that turn a fresh Debian 13 machine into a single-node app platform. Public TCP is 22 (ops SSH), 2222 (Forgejo git SSH), and 443 (HTTPS). Everything else that this project installs listens on localhost.
+Ansible recipes that turn a fresh Debian 13 machine into a hardened, single-node application and security platform. Public TCP exposure is restricted to ports `22` (ops OpenSSH), `2222` (Forgejo git SSH), and `443` (HTTPS). Everything else installed by this project listens strictly on localhost.
 
-You will get Traefik, an OWASP WAF, Authentik, Forgejo, SigNoz, Wazuh, scheduled Trivy image scanning, a Forgejo Actions runner without Docker-in-Docker, an optional on-box app stack (`svc-scrapecast`), and optional packet sensors (Suricata, Zeek, YAF/SiLK).
+You will get Traefik, an OWASP ModSecurity WAF, Authentik identity management, Forgejo git hosting, SigNoz observability, Wazuh SIEM/XDR, scheduled Trivy container image scanning, a Forgejo Actions runner with rootless Podman, an optional on-box application stack (`svc-scrapecast`), and optional network packet sensors (Suricata IDS, Zeek NSM, YAF/SiLK IPFIX flow logging).
 
-If you are new to Ansible, start at **How to deploy**. Architecture, capacity, and the honesty section about packet capture live under **How it works**.
+Deployment is designed to be streamlined and efficient: in normal circumstances it requires only a **single automated playbook execution**. For ongoing maintenance and development, finely scoped execution tags let you update individual services (such as Suricata rules or firewall filters) in seconds rather than waiting for multi-role rebuilds.
 
-## How to deploy
+---
+
+## Quickstart: Deploying the platform
 
 ### Ansible in one page
 
-Ansible is a tool that logs into a Linux machine over SSH and configures it from YAML files.
+Ansible is an automation tool that connects to a target Linux machine over SSH and configures it from declarative YAML playbooks.
 
-| Word | Meaning |
+| Term | Meaning |
 |---|---|
-| Controller | Your laptop. Ansible runs here. |
-| Target | The VPS or Vagrant VM being built. |
-| Inventory | `inventory/hosts.yml` or `inventory/vagrant.yml`. IP, SSH user, SSH key. |
-| `group_vars/all/main.yml` | Non-secret settings: domain, SSH public key, feature flags. |
-| `group_vars/all/vault.yml` | Secrets. Encrypt this file. Never commit it. |
-| Playbook | `site.yml`. The ordered list of roles (preflight, dns, base, platform, …). |
-| Role | One job, for example "install Traefik" or "lock down sshd". |
+| **Controller** | Your local laptop or workstation where Ansible runs. |
+| **Target** | The Debian 13 VPS or Vagrant VM being configured. |
+| **Inventory** | `inventory/hosts.yml` (production VPS) or `inventory/vagrant.yml` (local VM). Defines target IP, SSH user, and credentials. |
+| `group_vars/all/main.yml` | Non-secret platform settings: domain, SSH public keys, hardware sizing, and feature flags. |
+| `group_vars/all/vault.yml` | Encrypted secrets file. Never commit this plaintext to version control. |
+| **Playbook** | `site.yml`. The top-level orchestration playbook ordering all roles. |
+| **Role** | A modular unit of configuration (e.g. `base`, `platform`, `sensors`, `firewall`). |
 
-This repo uses [uv](https://docs.astral.sh/uv/) so you do not install Ansible globally. `./setup-controller.sh` creates `.venv` and installs Ansible plus Galaxy collections. Prefix commands with `uv run` so they use that environment:
+This repository uses [uv](https://docs.astral.sh/uv/) to manage dependencies without touching your global Python environment. `./setup-controller.sh` installs `uv`, configures `.venv`, and downloads required Ansible Galaxy collections. Prefix playbook commands with `uv run` to execute within this managed environment:
 
 ```bash
 uv run ansible-playbook site.yml --ask-vault-pass
 ```
 
-Flags you will see:
+Common command-line flags:
 
-| Flag | What it does |
+| Flag | Purpose |
 |---|---|
-| `-i inventory/vagrant.yml` | Use this inventory instead of the default `inventory/hosts.yml`. |
-| `--ask-vault-pass` | Prompt for the password that decrypts `vault.yml`. |
-| `--ask-become-pass` | Prompt for the `ops` sudo password. Needed after the first play, once root SSH is gone. |
-| `-e name=value` | Override one variable for this run only. |
-| `--tags platform` | Run only the roles that have that tag. |
+| `-i <inventory>` | Specify inventory path (defaults to `inventory/hosts.yml` via `ansible.cfg`). |
+| `--ask-vault-pass` | Prompts for the password to decrypt `group_vars/all/vault.yml`. |
+| `--ask-become-pass` | Prompts for the `ops` user sudo password (needed for subsequent plays once root SSH is disabled). |
+| `-e key=value` | Override a variable for this execution only (e.g. `-e firewall_lockdown_confirm=true`). |
+| `--tags <tag,...>` | Run only roles or tasks matching the specified tags (e.g. `--tags firewall` or `--tags suricata`). |
 
-### Tags and maintenance variables
+---
 
-The normal full deployment is intentionally idempotent. Useful focused runs are:
+### Prerequisites & Hardware Sizing
 
-```bash
-# Base platform, Wazuh, and live verification
-uv run ansible-playbook site.yml --ask-vault-pass --tags platform,wazuh_agent,verify
+- **Target OS**: Fresh Debian 13 (Trixie) installation (public VPS or local Vagrant VM).
+- **SSH Key**: An Ed25519 public key on your controller (`~/.ssh/id_ed25519.pub`).
+- **Domain & DNS**: A public domain zone for production TLS certificates (Cloudflare DNS automation supported).
+- **Controller Tools**: `uv`, `openssl`, and `htpasswd` (`apache2-utils` on Debian/Ubuntu, `httpd-tools` on RHEL/Fedora).
+- **VPS Console Access**: Cloud serial/web console access is recommended as a safety precaution before activating firewall lockdown.
 
-# Backups and restore workflows (do not include restore during deployment)
-uv run ansible-playbook site.yml --ask-vault-pass --tags backup
-uv run ansible-playbook site.yml --ask-vault-pass --tags backup_restore,restore
-```
+#### Sizing requirements
+This platform runs production-grade observability (SigNoz/ClickHouse), SIEM (Wazuh manager/indexer), and full packet analysis engines (Zeek, Suricata, SiLK).
+- **Production VPS**: 12–16 vCPUs, 32 GiB RAM, 300+ GiB NVMe SSD.
+- **Minimum Floor**: 8 vCPUs, 20 GiB RAM, 200 GiB disk.
+- **Lab / Undersized Hosts**: Set `allow_undersized_host: true` in `group_vars/all/main.yml` (already enabled for Vagrant) to bypass the capacity gate and allocate a 4 GiB swap file.
 
-Certificate rotation is opt-in. `wazuh_rotate_certificates` defaults to `false`,
-so repeated runs preserve the root CA and valid dependent certificates. For a
-planned rotation, the platform role archives the existing CA and dependent
-certificates, regenerates the complete Wazuh trust chain, and restarts Wazuh:
+---
 
-```bash
-uv run ansible-playbook site.yml --ask-vault-pass \
-  --tags platform -e wazuh_rotate_certificates=true
-```
+### Step 1: Install Controller Dependencies
 
-Rotation replaces the root CA, so every signed Wazuh certificate and trust store
-is replaced together. Treat it as a maintenance event; existing external clients
-that trust the old CA must be updated.
-
-For a fresh host, one full run is preferred; it includes preflight and all roles:
-
-```bash
-uv run ansible-playbook site.yml --ask-vault-pass \
-  -e firewall_lockdown_confirm=false
-```
-
-The controller talks to one host group, `secure_vps`. `ansible.cfg` already points at `inventory/hosts.yml`.
-
-### What you need
-
-- A Debian 13 target. Public VPS or a local Vagrant VM.
-- An SSH public key on the controller (`~/.ssh/id_ed25519.pub` is typical).
-- Console/serial access on a VPS. If SSH or the firewall goes wrong, that is how you get back in.
-- For a public hostname, a DNS zone you control. Cloudflare is optional but wired up.
-- On the controller: `uv`, and for vault generation `openssl` plus `htpasswd` (`apache2-utils` on Debian, `httpd-tools` on Fedora/RHEL). Vagrant plus libvirt if you want a local VM.
-
-The playbook refuses to continue on a host smaller than 8 vCPU, 20 GiB RAM, and 200 GiB disk unless you set `allow_undersized_host: true`. Vagrant inventory sets that for you. A useful production box is more like 12 to 16 vCPU, 32 GiB RAM, and 300+ GiB fast SSD. Wazuh, SigNoz, and the packet sensors are heavy on their own.
-
-### 1. Install Ansible on your laptop
+On your controller machine, execute the bootstrap script:
 
 ```bash
 ./setup-controller.sh
 ```
 
-That is the only controller install step. Re-run it when `requirements.yml` changes.
+This installs `uv`, creates a hermetic Python virtual environment (`.venv`), and installs Ansible, `passlib`, `cryptography`, and required Ansible Galaxy collections.
 
-### 2. Pick names and certificates
+---
 
-Five admin hostnames are built from `base_domain` in `group_vars/all/main.yml`:
+### Step 2: Configure Settings and Secrets
 
-`auth`, `git`, `observe`, `security`, `edge`
+1. **Configure Inventory**:
+   ```bash
+   cp inventory/hosts.yml.example inventory/hosts.yml
+   ```
+   Edit `inventory/hosts.yml` and set `ansible_host` to your target VPS IP. For a fresh target, the initial connection uses `ansible_user: root` (or your cloud image default user).
 
-The product uses the zone apex and `www` (`app_fqdn` / `app_www_fqdn`). `www` redirects to the apex.
+2. **Configure Settings (`group_vars/all/main.yml`)**:
+   - `admin_authorized_keys`: Paste your controller's SSH public key (`cat ~/.ssh/id_ed25519.pub`).
+   - `base_domain`: Set your domain (e.g. `example.net`).
+   - `traefik_acme_challenge`: Set to `tls` for a public VPS with open port 443, or `dns` for Vagrant/private lab IPs.
+   - `cloudflare_dns_enabled`: Set `true` if using Cloudflare to automatically create DNS A-records.
 
-How certificates are issued depends on that domain and `traefik_acme_challenge`:
+3. **Generate & Encrypt Secrets (`group_vars/all/vault.yml`)**:
+   Instead of hand-generating hashes, run the automated vault generator:
+   ```bash
+   ./generate-vault.sh
+   ```
+   The script prompts for the `ops` sudo password, a temporary web bootstrap password, and administrative contact emails, then securely generates strong cryptographic keys and bcrypt/yescrypt password hashes for all services. Application credentials are displayed once on stderr—save them to a secure password manager.
 
-| Where it runs | `base_domain` | `traefik_acme_challenge` | `cloudflare_dns_enabled` | Result |
-|---|---|---|---|---|
-| Vagrant, throwaway names | `test.local` | ignored | `false` | File CA. Trust `tls/lab-ca.pem` on your laptop. |
-| Vagrant or home lab, real zone | `example.net` | `dns` | `true` | Let's Encrypt via Cloudflare TXT records. Works on a private IP. |
-| Public VPS | `example.net` | `tls` | `true` or create A records by hand | Let's Encrypt via TLS-ALPN. Let's Encrypt must reach TCP/443. |
+   Encrypt the generated vault:
+   ```bash
+   uv run ansible-vault encrypt group_vars/all/vault.yml
+   ```
 
-`tls` is the default for any domain that is not `.local`. Let's Encrypt's servers look up the name in public DNS and open TCP/443 to that address. A libvirt NAT IP will never answer, so Vagrant with a real zone needs `dns`.
+   *(Optional)* If using Cloudflare DNS automation, edit the vault to add your token:
+   ```bash
+   uv run ansible-vault edit group_vars/all/vault.yml
+   # Add: cloudflare_api_token: "your-cloudflare-api-token"
+   ```
 
-`dns` copies your Cloudflare credential onto `svc-edge` so Traefik can create `_acme-challenge` TXT records. Let's Encrypt never connects to the VM. The same names can later point at a VPS; the certificates stay valid.
+---
 
-Do not publish `AAAA` records. Public listeners are IPv4 only. Do not orange-cloud (proxy) those records. Traefik must see the real client address, and TLS-ALPN cannot complete through Cloudflare's HTTP proxy.
+### Step 3: Run the Playbook
 
-A scoped API token with **Zone.DNS Edit** and **Zone.Zone Read** on that zone is enough. Put it in the vault as `cloudflare_api_token`. A Global API Key plus `cloudflare_email` also works. If the Cloudflare zone name is not `base_domain`, set `cloudflare_zone` (for example zone `example.com` with `base_domain: lab.example.com`).
+You have two choices for rolling out the platform:
 
-While you iterate on DNS-01, you can point Traefik at Let's Encrypt staging so you do not burn production rate limits. Uncomment `traefik_acme_ca_server` in `main.yml`. Staging certificates are not trusted by browsers.
-
-### 3. Fill in settings and secrets
-
-**Settings** (`group_vars/all/main.yml`):
-
-- Paste your complete SSH public key line into `admin_authorized_keys`.
-- Set `base_domain`, and the certificate/Cloudflare flags from the table above.
-- Leave `protect_admin_apps_with_authentik: false` until Authentik proxy providers exist.
-- Leave `firewall_lockdown_confirm: false` until SSH on 22 and HTTPS on 443 both work. Open TCP/2222 in the provider security group before you activate nftables, or git SSH dies with the rest of the unexpected traffic.
-
-**Inventory** for a VPS:
-
-```bash
-cp inventory/hosts.yml.example inventory/hosts.yml
-```
-
-Edit `ansible_host` to the provider IP. First play uses `ansible_user: root` (or whatever the image allows). After the base role, SSH only accepts `ops`.
-
-**Secrets.** Do not copy `vault.yml.example` by hand unless you enjoy hashing passwords. The helper asks for the `ops` sudo password, a temporary web bootstrap password, and contact emails, then generates the rest:
+#### Option A: Fast Single-Pass Deployment (Recommended)
+If your SSH public key is in `admin_authorized_keys` and your cloud provider's firewall/security group permits inbound ports `22`, `2222`, and `443`, you can deploy the complete stack and lock down the host in a **single run**:
 
 ```bash
-./generate-vault.sh
+uv run ansible-playbook site.yml --ask-vault-pass -e firewall_lockdown_confirm=true
 ```
 
-It prints application passwords on stderr. Save them. Then encrypt:
+In one continuous execution, Ansible will:
+1. Validate host hardware capacity (CPU, RAM, disk).
+2. Create Cloudflare DNS records (if enabled).
+3. Apply CIS Debian 13 baseline hardening, create the `ops` administrative user, configure authorized SSH keys, and enforce rootless Podman subordinate UID/GID mappings.
+4. Deploy all core platform containers (`edge`, `waf`, `auth`, `forgejo`, `signoz`, `wazuh`).
+5. Configure host telemetry (OTel Collector) and packet capture sensors (Suricata, Zeek, SiLK/YAF).
+6. Install the host Wazuh agent, Rustinel monitor, and Trivy image scanning timers.
+7. Activate strict native `nftables` firewall rules, dropping all unexpected inbound traffic while preserving SSH, Git SSH, and HTTPS.
 
+Once complete, OpenSSH is locked down to key-based authentication for `ops` only. Root SSH login is permanently disabled.
+
+#### Option B: Cautious Two-Step Deployment (Safety Gate)
+If you prefer to verify that SSH and web services function correctly before activating the firewall:
+
+**Pass 1 — Full provisioning without firewall lockdown**:
 ```bash
-uv run ansible-vault encrypt group_vars/all/vault.yml
+uv run ansible-playbook site.yml --ask-vault-pass -e firewall_lockdown_confirm=false
 ```
+The firewall rules are generated and syntax-checked, but not activated. Initial source builds and container image pulls take 30–60 minutes.
 
-If you use Cloudflare, add `cloudflare_api_token` (or `cloudflare_api_key` and `cloudflare_email`) to `vault.yml` before or after encrypting. `ansible-vault edit group_vars/all/vault.yml` opens the decrypted file in your editor.
-
-Never commit `vault.yml`, `inventory/hosts.yml`, `inventory/vagrant.yml`, runner tokens, registry pull tokens, or `tls/`.
-
-### 4a. Local Vagrant lab
-
-`vagrant up` boots Debian 13 and writes `inventory/vagrant.yml`. It does not run the platform playbook unless you set `VAGRANT_ANSIBLE=1`.
-
-Default libvirt networking is NAT (`192.168.121.0/24`). Your laptop can reach the guest. Other devices on your LAN cannot. For LAN-wide access, create the VM with a bridge (wired NIC or a Linux bridge; Wi-Fi macvtap is often a mess):
-
+**Verify connectivity**:
 ```bash
-VAGRANT_BRIDGED=1 VAGRANT_BRIDGE=br0 vagrant up
+ssh -p 22 ops@<TARGET_IPV4>
+curl -I https://auth.<your-domain>/
 ```
 
-**Throwaway `.local` names** (file CA, no Cloudflare):
-
-```bash
-./setup-controller.sh
-vagrant destroy -f
-rm -f inventory/vagrant.yml
-vagrant up
-uv run ansible-playbook site.yml \
-  -i inventory/vagrant.yml \
-  --ask-vault-pass \
-  -e firewall_lockdown_confirm=false
-```
-
-After the base role, sshd only accepts `ops`. Edit `inventory/vagrant.yml` so `ansible_user` is `ops` and `ansible_ssh_private_key_file` is your operator key (`~/.ssh/id_ed25519`). If you leave `ansible_user: ops` in that file and then build a brand-new VM, the first play will fail because `ops` does not exist yet. Delete `inventory/vagrant.yml` before a cold `vagrant up`.
-
-```bash
-curl --cacert tls/lab-ca.pem -I https://auth.test.local/
-```
-
-`https://edge.test.local/` has no HTTP router. The Traefik dashboard is `/dashboard` and `/api`, and only after `protect_admin_apps_with_authentik` is true.
-
-**Real zone on Vagrant** (Let's Encrypt via DNS-01):
-
-In `main.yml` set `base_domain` to a zone you own, `traefik_acme_challenge: dns`, and `cloudflare_dns_enabled: true`. Put the token in the vault. Then the same `vagrant up` / `ansible-playbook` commands. The dns role publishes A records to the guest IPv4, which may be RFC1918. Browsers on the hypervisor should resolve those names through Cloudflare. Pointing a phone at them still needs a bridged address the phone can route to.
-
-To boot and provision in one step:
-
-```bash
-VAGRANT_ANSIBLE=1 vagrant up
-```
-
-Later plays:
-
-```bash
-VAGRANT_ANSIBLE=1 vagrant provision
-VAGRANT_ANSIBLE=1 FIREWALL_LOCKDOWN=1 vagrant provision
-```
-
-Without `VAGRANT_ANSIBLE=1`, `vagrant provision` only re-runs the small bootstrap shells.
-
-### 4b. Public VPS
-
-Install a fresh Debian 13 image. Confirm root SSH works. Allow TCP/22, TCP/2222, and TCP/443 in the provider security group. Create the five A records by hand, or set `cloudflare_dns_enabled: true`.
-
-**Pass 1.** Install everything. Do not activate nftables yet:
-
-```bash
-uv run ansible-playbook site.yml \
-  --ask-vault-pass \
-  -e firewall_lockdown_confirm=false
-```
-
-The base role creates `ops`, disables root and password SSH, and keeps OpenSSH on TCP/22 with public-key auth only. Traefik binds TCP/443. Forgejo's own SSH binds TCP/2222. Reconnect as `ops@host`. Root SSH will not work after this.
-
-First image pulls and source builds can take 30 to 90 minutes.
-
-From another terminal:
-
-```bash
-ssh -p 22 ops@VPS_IPV4
-curl -I https://auth.example.net/
-curl -u bootstrap https://observe.example.net/api/v1/health
-openssl s_client -connect VPS_IPV4:443 -servername git.example.net </dev/null
-```
-
-Use your names. With `traefik_acme_challenge: tls`, that last check should show a publicly trusted certificate. SigNoz and Wazuh still use the temporary Basic Auth user `bootstrap` until you finish Authentik.
-
-Change `inventory/hosts.yml` to:
-
+**Pass 2 — Instant Firewall Lockdown (~3 seconds)**:
+Update `inventory/hosts.yml` to use `ops`:
 ```yaml
 ansible_user: ops
 ansible_port: 22
 ansible_become: true
 ```
-
+Then activate the firewall:
 ```bash
-uv run ansible -m ping secure_vps
-```
-
-**Pass 2.** Turn on nftables. You will need the `ops` sudo password:
-
-```bash
-uv run ansible-playbook site.yml \
-  --ask-vault-pass \
-  --ask-become-pass \
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass \
+  --tags firewall \
   -e firewall_lockdown_confirm=true
 ```
+> [!TIP]
+> **No more waiting for rebuilds**: Using `--tags firewall` targets only the nftables activation tasks. It executes in approximately 3 seconds rather than re-running the entire playbook for 45+ minutes!
 
-nftables then drops inbound traffic except loopback, established replies, a little ICMP/ICMPv6, and new TCP/22, TCP/2222, plus TCP/443. Outbound stays open so DNS, NTP, ACME, OIDC, image pulls, updates, and telemetry work.
+---
 
-fail2ban watches host sshd and the Forgejo container journal. A ban lands in fail2ban's own `inet f2b-table`, not `ansible_filter`, so the next firewall apply does not unban everyone. The same action appends the address to the WAF deny list. Console access is still how you get back in if you lock yourself out. Add your own addresses to `fail2ban_ignoreip` if you have a stable source IP.
+## Local Vagrant Lab Setup
 
-Two passes feels slow. It exists because a bad nftables policy with no console access is a brick. Setting `firewall_lockdown_confirm=false` later does **not** remove a policy that is already active.
+To test the stack locally using libvirt/KVM:
 
-### CIS Debian 13 hardening and safety gates
-
-The base role installs the CIS-oriented login banners, chrony and cron services,
-protected cron paths, SSH forwarding/banner/MAC/startup controls, sudo logging,
-password-required operator sudo, a restricted `su` group, password-aging defaults,
-password quality/history configuration, rsyslog, and the journal-remote package.
-Audit records for these policy files and the corresponding journal/filesystem logs
-are ingested by the host Wazuh agent.
-
-Three groups of findings are deliberately not forced on a first deployment:
-
-- The native nftables rules are rendered and syntax-checked on every run, but
-  `firewall_lockdown_confirm` must remain false until SSH, Forgejo SSH, HTTPS, and
-  console recovery are proven. UFW and iptables findings are not applicable to
-  this nftables implementation; installing competing firewall managers is unsafe.
-  The selected policy defaults inbound and forwarded traffic to deny but leaves
-  outbound traffic allowed for DNS, NTP, ACME, package/image pulls, OIDC, and
-  telemetry. A literal default-deny-output check therefore remains a deliberate
-  availability tradeoff.
-- `pam_hardening_confirm` activates pwquality, password history, `use_authtok`, and
-  null-password removal only during a console-backed maintenance window. The
-  faillock policy is staged but its PAM stack entries remain a documented gap:
-  Debian has no safe generic way to merge them into an arbitrarily customized
-  provider PAM stack without risking loss of sudo and console authentication.
-- `root_account_lock_confirm` locks the local root password only after a tested
-  operator sudo session and provider console are available. SSH root login is
-  denied independently. Existing unrecognized `NOPASSWD` rules are not deleted;
-  the managed operator rule is password-required and loaded late.
-
-`systemd-journal-upload` stays disabled because it requires a separate remote
-journal endpoint and would duplicate the security-event path. Wazuh is the
-central event sink instead, including rsyslog auth/system logs and the sudo log.
-This intentionally leaves the literal journal-upload-active CIS check unmet while
-meeting the operational goal without adding an unconfigured network service.
-
-### 5. Authentik accounts and admin apps
-
-Sign in at `https://auth.<domain>` as `akadmin` with `authentik_bootstrap_password`. Username and password already work. You do not need Google or any other OAuth source to use the rest of this stack.
-
-**Local users**
-
-1. **Directory → Groups → New.** Name it `external-users`. Do not give this group superuser permissions or the Authentik Admin interface.
-2. **Directory → Users → New User → Internal User.** Set a unique username, display name, and email. Create the user, open it, **Reset password**, and put the user in `external-users`.
-3. Keep `akadmin` as break-glass. Create a second admin user in a group that *does* have superuser if you do not want to use `akadmin` daily.
-
-Self-service password reset needs a recovery flow set on **System → Brands**. Until then, reset passwords from the admin user list.
-
-OAuth sources (Google, GitHub, and so on) can wait. When you add one later, create it under **Directory → Federation and Social login**, not under Applications. A Google Web client still needs redirect URI `https://auth.<domain>/source/oauth/callback/google/` and slug `google`.
-
-**Protect SigNoz, Wazuh, and the Traefik dashboard**
-
-1. Create one Authentik proxy provider (forward-auth) and application per external host.
-2. Assign them to the embedded outpost. Grant only the intended group.
-3. Set the outpost `authentik_host` to `https://auth.<domain>` including the scheme. A bare hostname becomes `https://localhost` in redirects.
-4. Put all three applications on the outpost selected list. Authentik's branded "Not Found" page usually means that Host is not assigned to the outpost.
-5. On the host, the outpost matches on `Host`:
-
+1. **Launch the VM**:
    ```bash
-   curl -sS -o /dev/null -w '%{http_code}\n' \
-     -H "Host: observe.<domain>" \
-     http://127.0.0.1:19000/outpost.goauthentik.io/auth/traefik
+   ./setup-controller.sh
+   vagrant up
+   ```
+   `vagrant up` boots a Debian 13 image, assigns private networking, and writes `inventory/vagrant.yml`.
+
+2. **Provision with local File CA (`.local` domain)**:
+   ```bash
+   uv run ansible-playbook site.yml \
+     -i inventory/vagrant.yml \
+     --ask-vault-pass \
+     -e firewall_lockdown_confirm=false
+   ```
+   In `.local` mode, Traefik uses an internal file CA. The root CA is saved to `tls/lab-ca.pem` on your controller. Test using:
+   ```bash
+   curl --cacert tls/lab-ca.pem -I https://auth.test.local/
    ```
 
-   401 means the provider is bound. 404 means the Host does not match.
+3. **Subsequent runs on Vagrant**:
+   After the initial run, edit `inventory/vagrant.yml` to set `ansible_user: ops` and `ansible_ssh_private_key_file: ~/.ssh/id_ed25519`.
 
-6. Set `protect_admin_apps_with_authentik: true` and rerun `--tags platform,verify`. Traefik then publishes `/outpost.goauthentik.io/` on each protected host (straight to Authentik, not the WAF) and the dashboard at `https://edge.<domain>/dashboard/`. The playbook PATCHes the embedded outpost `authentik_host` and attaches proxy providers whose `external_host` matches observe, security, or edge.
+---
 
-Keep the local application logins as break-glass credentials.
+## Post-Deployment Application Setup
 
-### 6. Forgejo login (optional SSO)
+### 1. Authentik & Admin App Protection
 
-Skip this if you are setting up CI. Authentik OIDC is for people in the browser. The runner already authenticates with its registration token. Jobs get `${{ forgejo.token }}`. None of that talks to Authentik.
+1. Navigate to `https://auth.<base_domain>` and log in as `akadmin` with the password set in `authentik_bootstrap_password`.
+2. **Create Users & Groups**: Under **Directory → Groups**, create `external-users`. Under **Directory → Users**, create internal users and assign them to `external-users`.
+3. **Protect Admin Dashboards**:
+   - In Authentik, create a Proxy Provider and Application for `observe.<base_domain>` (SigNoz), `security.<base_domain>` (Wazuh), and `edge.<base_domain>` (Traefik).
+   - Bind these applications to the Embedded Outpost.
+   - Once bound, set `protect_admin_apps_with_authentik: true` in `group_vars/all/main.yml` and execute:
+     ```bash
+     uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags edge,traefik,verify
+     ```
+   - Traefik will route incoming requests through Authentik forward-auth, replacing temporary Basic Auth with single sign-on.
 
-Forgejo uses native OIDC so `git` over HTTPS still works. Proxy auth would break that. Local `forgejo_admin_*` is enough to create repositories and enable Actions.
+### 2. Forgejo Git & Optional SSO
 
-When extra humans need to sign in:
+- Forgejo runs at `https://git.<base_domain>`.
+- Git SSH operates on `ssh://git@git.<base_domain>:2222/owner/repo.git` directly via Forgejo's internal SSH server (independent of host OpenSSH on port 22).
+- Initial admin credentials (`forgejo_admin_user` / `forgejo_admin_password`) are configured during deployment.
+- Optional Authentik OIDC integration can be configured in Forgejo under **Site Administration → Authentication Sources** by selecting OAuth2/OIDC.
 
-1. In Authentik, create an OAuth2/OpenID provider named `forgejo` and an application bound to it.
-2. Redirect URI: `https://git.<domain>/user/oauth2/authentik/callback`
-3. In Forgejo, sign in with `forgejo_admin_*`. Under Site Administration → Authentication Sources, add OAuth2 with OpenID Connect discovery. Request `openid profile email`.
-4. Test with a non-admin Authentik user before you disable local login.
+### 3. CI/CD Runner (Forgejo Actions)
 
-New Forgejo accounts are restricted, private, and cannot create organizations until an admin elevates them. Host OpenSSH stays `ops` on 22. Git SSH is Forgejo's own server: `ssh://git@git.<domain>:2222/owner/repo.git`. Put keys in the Forgejo UI, not `authorized_keys` on the VPS.
+1. In the Forgejo web UI, navigate to **Site Administration → Actions → Runners** (or Repository Settings → Actions) and generate a **Registration Token**.
+2. Store this token in `group_vars/all/vault.yml` under `forgejo_runner_registration_token` via `uv run ansible-vault edit group_vars/all/vault.yml`.
+3. Deploy and register the runner:
+   ```bash
+   uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags runner
+   ```
+4. The runner executes within an unprivileged rootless Podman environment using labels `debian-13:docker://node:24-bookworm` and `podman-host:host`.
+5. Once registration succeeds, clear `forgejo_runner_registration_token` from your vault.
 
-Forgejo Actions can also *issue* OIDC tokens (`enable-openid-connect: true` in a workflow, issuer `https://git.<domain>/api/actions`). That is for talking to AWS, GCP, or a Kubernetes API with short-lived JWTs. Same-host Packages does not need it.
+### 4. Forgejo Packages & Container Workflows
 
-### 7. CI runner
+Forgejo Packages serves as an internal OCI container registry listening on `127.0.0.1:13000`. Actions workflows push and pull directly against loopback rather than hairpining through external HTTPS:
+- Example workflow available at `examples/forgejo-workflow.yml`.
+- Build images using `podman-host` jobs and push to `127.0.0.1:13000/<owner>/<repo>/<image>:<sha>`.
+- Trivy automatically scans newly built container images in CI before publication.
 
-The runner stays unregistered until you create a Forgejo Actions token at the narrowest scope you can live with. Put it in the vault as `forgejo_runner_registration_token` and rerun:
+### 5. Optional On-Box Application (`scrapecast`)
+
+The platform includes an optional application stack (`svc-scrapecast`) listening on the apex domain (`https://<base_domain>/`):
+1. Build and push the application images (`scraper`, `web`, `evasion`) to Forgejo Packages.
+2. Generate an access token in Forgejo with `package:read` scope and place it in the vault as `scrapecast_registry_pull_token`.
+3. Deploy the application:
+   ```bash
+   uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags scrapecast,edge
+   ```
+
+---
+
+## Available Tags Reference
+
+Playbook tasks and roles are tagged granularly. Use the `--tags` flag to execute specific subsets of the playbook and avoid unnecessary processing.
+
+### Tags Quick Reference Table
+
+| Tag | Affected Roles / Components | Approx. Runtime | Purpose / When to Use |
+|---|---|---|---|
+| `all` / `setup` | All provisioning roles | 30–60 min | Full platform installation and initial bootstrap. Excludes `backup_restore` and `verify`. |
+| `preflight` | `preflight` | 2 sec | Verifies CPU, RAM, disk requirements, and OS compatibility. (Always runs by default). |
+| `base` | `base` | 15–30 sec | Host CIS hardening, operator account creation, sudoers, chrony, and rsyslog. |
+| `ssh` | `base` (SSH tasks) | 2 sec | Updates OpenSSH daemon configuration, port bindings, and `admin_authorized_keys`. |
+| `firewall` | `base` (nftables tasks) | 3 sec | Compiles and syntax-checks nftables rules; activates lockdown if `firewall_lockdown_confirm=true`. |
+| `dns` | `dns` | 5 sec | Upserts Cloudflare DNS-only A-records for base domain and subdomains. |
+| `platform` | `platform` | 2–5 min | Configures service accounts, directories, and Podman Compose stacks for all admin services. |
+| `edge` / `traefik` | `platform` (edge stack) | 10 sec | Configures Traefik reverse proxy, dynamic file providers, TLS certificates, and headers. |
+| `waf` | `platform` (waf stack) | 8 sec | Configures ModSecurity + OWASP Core Rule Set reverse proxy containers. |
+| `auth` / `authentik`| `platform` (auth stack) | 20 sec | Deploys Authentik server, worker, and PostgreSQL database. |
+| `forgejo` | `platform` (forgejo stack)| 15 sec | Deploys Forgejo Git server, configuration, and SQLite storage. |
+| `signoz` | `platform` (signoz stack) | 30 sec | Deploys SigNoz observability stack, ClickHouse, Keeper, and query engine. |
+| `wazuh` / `wazuh_server`| `platform` (wazuh stack) | 30 sec | Deploys Wazuh manager, indexer, and dashboard containers. |
+| `fail2ban` | `fail2ban` | 5 sec | Configures fail2ban jail definitions and nftables/WAF banning integration. |
+| `telemetry` | `telemetry` | 15 sec | Configures host OpenTelemetry Collector, journald log collection, and metrics export. |
+| `otelcol` | `telemetry` (collector) | 5 sec | Updates `/etc/otelcol-contrib/config.yaml` and restarts the host collector. |
+| `alerts` / `signoz_alerts` | `telemetry` (alert rules) | 4 sec | Upserts managed operational alerting rules into SigNoz via the SigNoz API. |
+| `sensors` | `sensors` | 10–25 min | Compiles and configures Suricata IDS, Zeek NSM, and YAF/SiLK flow capture. |
+| `suricata` | `sensors` (Suricata only) | 5 sec | Updates Suricata configuration and rules without recompiling Zeek or SiLK. |
+| `zeek` | `sensors` (Zeek only) | 10–15 min | Compiles from source and configures Zeek network security monitor. |
+| `silk` / `yaf` | `sensors` (SiLK & YAF) | 5–10 min | Compiles and configures YAF flow sensor and SiLK flow capture storage. |
+| `rustinel` | `rustinel` | 5 sec | Deploys Rustinel process and network monitoring binary and ruleset. |
+| `trivy` | `trivy` | 15 sec | Installs Trivy binary and configures scheduled per-service container image scan timers. |
+| `wazuh_agent` | `wazuh_agent` | 20 sec | Installs host Wazuh agent, syncs Sigma detection rules, and connects to manager. |
+| `runner` | `runner` | 15 sec | Configures Forgejo Actions runner service and rootless Podman execution environment. |
+| `scrapecast` | `scrapecast` | 15 sec | Deploys scrapecast on-box application containers and database. |
+| `backup` | `backup` | 10 sec | Configures resticprofile off-site backup hooks and systemd timers. |
+| `restore` | `backup_restore` | 1–5 min | Extracts offsite restic backup snapshots to staging directory. (Requires `backup_restore_confirm=true`). |
+| `verify` | `verify` | 30 sec | Executes end-to-end integration tests, HTTP endpoint probes, and Wazuh detection fixtures. |
+
+---
+
+### Practical Tag Recipes
+
+Save time during development and maintenance by running only the necessary tasks:
 
 ```bash
-uv run ansible-playbook site.yml \
-  --ask-vault-pass --ask-become-pass \
-  --tags runner \
-  -e firewall_lockdown_confirm=true
+# Update firewall rules without touching any containers (~3 seconds)
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags firewall -e firewall_lockdown_confirm=true
+
+# Refresh Suricata IDS rules without recompiling Zeek or SiLK (~5 seconds)
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags suricata
+
+# Reload Traefik routing or WAF configuration (~10 seconds)
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags edge,waf
+
+# Push updated SigNoz alert rules as code (~4 seconds)
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags alerts
+
+# Sync Wazuh agent Sigma detection rules and test logtest fixtures (~20 seconds)
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags wazuh_agent
+
+# Rotate Wazuh root CA and node certificates
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags platform -e wazuh_rotate_certificates=true
+
+# Trigger manual offsite backup staging and snapshot
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags backup
+
+# Run end-to-end verification and service health checks
+uv run ansible-playbook site.yml --ask-vault-pass --ask-become-pass --tags verify
 ```
 
-Registration talks to Forgejo on `127.0.0.1`, not `https://git.<domain>/`. From this host the public name hairpins through Traefik and the register command never returns.
+---
 
-Ordinary jobs use the `debian-13` label inside a disposable rootless Podman container. They do not get the Podman socket. The default image is `node:24-bookworm`. That is a demo. Override `container.image` in the workflow if the repo is not Node. Job containers resolve `git.<domain>` to the host gateway so checkout does not hairpin the public address.
+## Available Variables Reference
 
-The `podman-host` label runs `podman --remote` as `svc-runner` and can only control that account's engine. Use it to build and push images. Do not mount another service account's volumes or restart `secure-*` units from a workflow. After `.runner` exists, revoke the one-time token in Forgejo and clear it from the vault.
+### 1. Identity, Access & System Exposure (`group_vars/all/main.yml`)
 
-Workflow code is untrusted code with the rights of `svc-runner`. An example workflow is `examples/forgejo-workflow.yml`.
+| Variable | Default | Purpose / When to Modify |
+|---|---|---|
+| `platform_hostname` | `secure-vps` | Hostname configured on the target Linux instance. |
+| `admin_user` | `ops` | Name of the primary unprivileged administrative user created by the `base` role. |
+| `admin_authorized_keys` | `[]` | List of SSH public keys granted access to `admin_user`. Required before deployment. |
+| `admin_uid` | `2000` | Numerical UID assigned to `admin_user`. |
+| `ssh_port` | `22` | Host OpenSSH listening port. |
+| `public_port` | `443` | Public HTTPS port bound by Traefik. |
+| `forgejo_ssh_port` | `2222` | Public Git SSH port bound by the Forgejo container. |
+| `fail2ban_ignoreip` | `[]` | CIDR list of trusted IPs that fail2ban will never ban (e.g. office or VPN IPs). |
+| `fail2ban_bantime` | `1h` | Initial ban duration for repeated authentication failures. |
+| `fail2ban_findtime` | `10m` | Time window within which authentication failures are counted. |
+| `fail2ban_sshd_maxretry` | `5` | Maximum failed SSH attempts before IP is banned. |
+| `fail2ban_forgejo_maxretry` | `10` | Maximum failed Forgejo login attempts before IP is banned. |
 
-That example scans the newly built image with the host's pinned Trivy binary before push. JSON and SARIF reports are uploaded as Forgejo job artifacts, then fixable HIGH or CRITICAL findings fail the job. Forgejo does not provide GitHub's Security tab, so SARIF is retained as an artifact rather than uploaded through CodeQL.
+### 2. Safety & Hardening Confirmation Gates
 
-CI can only scan images in `svc-runner`'s Podman store. It cannot inspect deployed images owned by `svc-edge`, `svc-wazuh`, or another isolated account. Scheduled `trivy-scan-svc-*.timer` units cover those stores independently after deployment.
+These safety gates prevent accidental lockout during automated deployments:
 
-### 8. First Actions workflow and Packages
+| Variable | Default | Safety Gate Description |
+|---|---|---|
+| `firewall_lockdown_confirm` | `false` | When `false`, candidate nftables rules are compiled and syntax-checked, but the active firewall is unchanged. Set `true` only when SSH (port 22) and HTTPS (port 443) reachability are proven. |
+| `pam_hardening_confirm` | `false` | When `true`, enforces strict password quality checks (`pwquality`), password history, and `use_authtok`. Enable only during maintenance windows with console access. |
+| `root_account_lock_confirm` | `false` | When `true`, locks the local Linux root account password. Enable only after operator sudo access is thoroughly verified. |
+| `backup_restore_confirm` | `false` | When `true`, enables extraction of offsite restic backup snapshots into `/var/lib/platform-backup/restore`. |
 
-Forgejo Packages is the container registry. Push and pull on `127.0.0.1:13000`, never through `https://git.<domain>/`. Traefik plus the WAF breaks the OCI protocol, and the public name hairpins. `svc-runner` and `svc-scrapecast` get an insecure-registry entry for that loopback address. Other accounts do not.
+### 3. Domain, DNS & ACME TLS Certificates
 
-1. Confirm `forgejo-runner.service` is active and the runner is listed in Forgejo.
-2. Create a private repository. Enable Actions on it if the toggle is off.
-3. Add `.forgejo/workflows/ci.yml`. Start with a test job on `debian-13`. Override the container image if you need more than Node.
-4. For image builds, add a `podman-host` job that logs in with `${{ forgejo.token }}`, builds, and pushes `127.0.0.1:13000/<owner>/<repo>/<image>:<sha>` plus `:main`. Grant `packages: write`.
-5. If checkout fails, the runner already maps `git.<domain>` to the host. Check that Traefik is up on `:443` and that the job is not trying to clone via the public IP from a Vagrant NAT.
+| Variable | Default | Purpose / When to Modify |
+|---|---|---|
+| `base_domain` | `aimingupward.com` | Primary root domain for the deployment. |
+| `auth_fqdn` | `auth.{{ base_domain }}` | FQDN for the Authentik identity provider. |
+| `git_fqdn` | `git.{{ base_domain }}` | FQDN for Forgejo Git and Packages. |
+| `observe_fqdn` | `observe.{{ base_domain }}` | FQDN for the SigNoz observability dashboard. |
+| `security_fqdn` | `security.{{ base_domain }}` | FQDN for the Wazuh SIEM/XDR dashboard. |
+| `traefik_fqdn` | `edge.{{ base_domain }}` | FQDN for the Traefik management dashboard. |
+| `app_fqdn` | `{{ base_domain }}` | Apex domain routed to the optional on-box app (`scrapecast`). |
+| `app_www_fqdn` | `www.{{ base_domain }}` | WWW domain redirected to `app_fqdn`. |
+| `cloudflare_dns_enabled` | `false` | When `true`, the `dns` role creates DNS-only A-records in Cloudflare using the vault token. |
+| `cloudflare_zone` | `{{ base_domain }}` | Cloudflare DNS zone name. Change if `base_domain` is a subdomain within a larger zone. |
+| `cloudflare_record_ipv4` | `""` | IP address to publish in DNS. If empty, uses `ansible_default_ipv4.address`. |
+| `traefik_acme_enabled` | `{{ not base_domain.endswith('.local') }}` | Enables automatic Let's Encrypt certificate issuance via ACME. |
+| `traefik_acme_challenge` | `tls` | ACME challenge type: `tls` (TLS-ALPN-01 on TCP 443 for public VPS) or `dns` (DNS-01 via Cloudflare for private labs). |
+| `traefik_acme_ca_server` | *(commented)* | Uncomment to use Let's Encrypt Staging directory (`https://acme-staging-v02.api.letsencrypt.org/directory`) to avoid rate limits. |
+| `protect_admin_apps_with_authentik` | `true` | When `true`, Traefik enforces Authentik forward-auth SSO in front of SigNoz, Wazuh, and Traefik dashboard. |
 
-A throwaway repo with only the test job from `examples/forgejo-workflow.yml` is a good first run before you point a real project at this.
+### 4. Hardware Sizing & Resource Tuning
 
-### 9. On-box app (scrapecast)
+| Variable | Default | Purpose / When to Modify |
+|---|---|---|
+| `minimum_vcpus` | `8` | Minimum vCPU count enforced by `preflight` role. |
+| `minimum_memory_mb` | `20000` | Minimum RAM in megabytes (~20 GiB) enforced by `preflight`. |
+| `minimum_root_disk_gb` | `200` | Minimum disk space in gigabytes on root filesystem. |
+| `allow_undersized_host` | `true` | When `true`, allows deployment to proceed on smaller hosts (such as local Vagrant VMs). |
+| `undersized_swap_mb` | `4096` | Size of the swapfile created on undersized hosts to prevent ClickHouse OOM errors. |
+| `source_build_jobs` | `2` | Number of parallel build processes used when compiling Zeek, YAF, and SiLK from source. |
+| `suricata_af_packet_threads` | `1` | AF_PACKET worker threads per network capture interface. |
+| `suricata_detect_thread_ratio` | `0.5` | Ratio of CPU cores allocated to Suricata signature pattern matching. |
 
-The product listens on `https://<base_domain>/` and `www` redirects there. Platform admin apps stay on `auth`, `git`, `observe`, `security`, and `edge`.
+### 5. Component Feature Toggles & Lifecycle Flags
 
-Runtime is another locked rootless account, `svc-scrapecast`, same restrictions as Authentik or Forgejo. Compose under that user is Postgres plus the three app images from Packages. OTLP goes to the host collector on `127.0.0.1:4318` through a pasta `host.containers.internal` mapping. Traefik is `network_mode: host`, so it uses `127.0.0.1` directly. Do not deploy scrapecast's local SigNoz, OpenObserve, or Kubernetes manifests onto this machine.
+| Variable | Default | Purpose / When to Modify |
+|---|---|---|
+| `enable_suricata` | `true` | Deploys Suricata network threat detection engine. |
+| `enable_zeek` | `true` | Compiles and deploys Zeek network security monitor. |
+| `enable_silk` | `true` | Compiles and deploys YAF IPFIX flow probe and SiLK flow capture. |
+| `rustinel_enabled` | `true` | Deploys Rustinel host process and network telemetry monitor. |
+| `enable_scrapecast` | `true` | Configures the optional `scrapecast` product application stack. |
+| `backup_offsite_enabled` | `false` | Enables scheduled off-site restic backups to Backblaze B2 over S3 API. |
+| `wazuh_rotate_certificates` | `false` | When `true`, forces rotation of the Wazuh root CA and all node certificates. |
+| `signoz_reset_telemetrystore` | `false` | When `true`, resets ClickHouse and Keeper storage volumes to repair schema mismatches. |
+| `wazuh_reset_store` | `false` | When `true`, wipes Wazuh indexer/manager data volumes to recover from initialization failure. |
+| `trivy_verify_scan_results` | `false` | When `true`, `--tags verify` requires completed Trivy vulnerability scan reports for each service account. |
 
-The runner never sees that home directory and never uses that Podman socket. CI pushes images. `scrapecast-update.timer` runs `podman-compose pull && up` as `svc-scrapecast` every five minutes and picks up `:main`.
+### 6. Service Loopback Ports & Networks
 
-Chicken and egg: the images do not exist until the first successful build job. Ansible creates the user, compose file, and unit anyway. It starts `secure-scrapecast` only after a packages:read token is in the vault *and* `podman-compose pull` succeeds. Until then the playbook prints what is missing and continues.
+All internal services bind strictly to loopback (`127.0.0.1`):
 
-1. Create `https://git.<domain>/<forgejo_admin_user>/scrapecast.git` and push `main`.
-2. Wait for CI to publish `scraper`, `web`, and `evasion` to Packages.
-3. In Forgejo, create an access token with package read (not write, not the admin password). Put it in the vault as `scrapecast_registry_pull_token`. `scrapecast_db_password` and `scrapecast_secrets_encryption_key` belong in the vault too (`./generate-vault.sh` makes them on a new vault; an existing vault needs `ansible-vault edit`).
-4. Rerun:
+| Variable | Port | Service Component |
+|---|---|---|
+| `authentik_http_port` | `19000` | Authentik web server and embedded outpost |
+| `authentik_metrics_port` | `19300` | Authentik Prometheus metrics endpoint |
+| `forgejo_http_port` | `13000` | Forgejo Git web interface and OCI Packages registry |
+| `signoz_ui_port` | `18080` | SigNoz web frontend |
+| `signoz_grpc_port` | `14317` | SigNoz query service gRPC |
+| `signoz_http_port` | `14318` | SigNoz query service HTTP |
+| `wazuh_dashboard_port` | `15601` | Wazuh Kibana/OpenSearch web dashboard |
+| `wazuh_indexer_port` | `19200` | Wazuh OpenSearch indexer REST API |
+| `waf_http_port` | `18090` | ModSecurity OWASP Core Rule Set reverse proxy |
+| `waf_status_port` | `18091` | ModSecurity Nginx stub_status metrics |
+| `host_otlp_grpc_port` | `4317` | Host OpenTelemetry Collector gRPC receiver |
+| `host_otlp_http_port` | `4318` | Host OpenTelemetry Collector HTTP receiver |
+| `scrapecast_web_port` | `43147` | Scrapecast web frontend |
+| `scrapecast_api_port` | `43148` | Scrapecast API backend |
+
+---
+
+### 7. Encrypted Secrets Catalog (`group_vars/all/vault.yml`)
+
+These secrets are generated automatically by `./generate-vault.sh` and stored in `vault.yml`:
+
+| Secret Variable | Purpose / Description |
+|---|---|
+| `admin_password_hash` | Cryptographic password hash (yescrypt or SHA-512) for the `ops` user's sudo access. |
+| `acme_email` | Administrative email address provided to Let's Encrypt for TLS expiry warnings. |
+| `bootstrap_admin_htpasswd` | Bcrypt htpasswd line used for temporary Basic Auth on admin endpoints prior to Authentik binding. |
+| `authentik_postgresql_password` | Database password for Authentik's dedicated PostgreSQL instance. |
+| `authentik_secret_key` | Secret encryption key used by Authentik for session signing and credential encryption. |
+| `authentik_bootstrap_password` | Initial login password for the default `akadmin` administrative account. |
+| `authentik_bootstrap_token` | Bootstrap API token used by Ansible to provision initial Authentik providers. |
+| `authentik_bootstrap_email` | Administrative email associated with the `akadmin` user. |
+| `forgejo_secret_key` | Secret key used by Forgejo for session token signing. |
+| `forgejo_internal_token` | Internal communication token between Forgejo web and worker processes. |
+| `forgejo_admin_user` | Username of the initial Forgejo administrator account. |
+| `forgejo_admin_password` | Password of the initial Forgejo administrator account. |
+| `forgejo_admin_email` | Email of the initial Forgejo administrator account. |
+| `signoz_postgresql_password` | Database password for SigNoz metadata PostgreSQL instance. |
+| `signoz_api_token` | *(Optional)* SigNoz API key for automated alerting rule management. |
+| `wazuh_indexer_admin_password` | Plaintext administrator password for the Wazuh OpenSearch indexer. |
+| `wazuh_indexer_admin_hash` | Bcrypt hash of `wazuh_indexer_admin_password` mounted into the indexer security config. |
+| `wazuh_dashboard_service_password`| Password used by the Wazuh dashboard to communicate with the indexer. |
+| `wazuh_dashboard_service_hash` | Bcrypt hash of `wazuh_dashboard_service_password`. |
+| `wazuh_api_password` | Password for the Wazuh manager REST API (`wazuh-wui`). |
+| `cloudflare_api_token` | *(Optional)* Cloudflare API token with `Zone.DNS Edit` and `Zone.Zone Read` permissions. |
+| `backup_b2_key_id` | *(Optional)* Backblaze B2 Application Key ID for off-site backups. |
+| `backup_b2_application_key` | *(Optional)* Backblaze B2 Application Key secret. |
+| `backup_restic_password` | *(Optional)* Encryption password used by restic for offsite backup repository encryption. |
+
+---
+
+## Day-to-Day Operations & Maintenance
+
+### Diagnostic Commands on the Target Host
+
+Execute these commands directly on the target VPS as the `ops` user:
 
 ```bash
-uv run ansible-playbook site.yml \
-  --ask-vault-pass --ask-become-pass \
-  --tags scrapecast,platform,verify \
-  -e firewall_lockdown_confirm=true
-```
-
-`--tags platform` refreshes Traefik and the WAF so the apex names are routed. The WAF sends `/api`, `/demo`, and `/rss` to the scraper and `/` to the web UI.
-
-`AUTH_MODE` starts at `off` for a loopback smoke test. That is a synthetic local admin. Put Authentik in front of the *app* (`AUTH_MODE=oidc`, issuer on `https://auth.<domain>/`) before you treat the apex as a public product. That is not the Forgejo login SSO from section 6.
-
-Rollback is retag `:main` in Packages and wait for the timer, or set `scrapecast_image_tag` in `group_vars` and rerun `--tags scrapecast`.
-
-If ModSecurity starts blocking scrape bodies, look at the WAF log and add a CRS exception after you have a real request. Do not guess the rule IDs in advance.
-
-### Day-to-day
-
-```bash
-# On the target
+# Check for any failed systemd units across the entire host
 systemctl --failed
-systemctl status secure-edge secure-auth secure-forgejo secure-signoz secure-wazuh secure-scrapecast
-journalctl -u secure-edge --since today
+
+# Check status of platform container stacks
+systemctl status secure-edge secure-waf secure-auth secure-forgejo secure-signoz secure-wazuh secure-scrapecast
+
+# View recent logs for the Traefik reverse proxy
+journalctl -u secure-edge --since today -f
+
+# Inspect rootless containers running under a specific service account
 sudo -u svc-forgejo env HOME=/var/lib/svc-forgejo XDG_RUNTIME_DIR=/run/user/2103 podman ps
+
+# Check status of network packet sensors
 systemctl status suricata-platform 'zeek@*' 'yaf-*' silk-rwflowpack
+
+# Inspect listening TCP and UDP sockets (verify only 22, 2222, and 443 are public)
 ss -lntup
+
+# Inspect active nftables firewall filtering table
 sudo nft list table inet ansible_filter
 ```
 
-Reapply from the controller:
+---
 
-```bash
-uv run ansible-playbook site.yml \
-  --ask-vault-pass --ask-become-pass \
-  -e firewall_lockdown_confirm=true
-```
+## Architecture and Security Deep Dive
 
-Useful tags: `preflight`, `dns`, `base`, `platform`, `trivy`, `telemetry`, `sensors`, `wazuh_agent`, `runner`, `scrapecast`, `backup`, `restore`, `verify`.
+### Security Isolation Boundaries
 
-## How it works
+| Boundary | Components | Public Exposure | Description |
+|---|---|---|---|
+| **Host System** | nftables, OpenSSH, OTel Collector, Wazuh Agent, Rustinel | `22/tcp`, `2222/tcp`, `443/tcp` | Native Debian 13 host processes hardened according to CIS benchmarks. |
+| `svc-edge` | Traefik v3, ACME client, security middleware | `0.0.0.0:443` | Rootless account. Terminates public TLS; routes to localhost backends. |
+| `svc-waf` | Nginx + ModSecurity v3 + OWASP Core Rule Set | `127.0.0.1:18090` | Rootless account. Inspects incoming HTTP requests for malicious payloads. |
+| `svc-auth` | Authentik server, worker, PostgreSQL | `127.0.0.1:19000` | Rootless account. Identity provider, SSO, and forward-auth gateway. |
+| `svc-forgejo` | Forgejo Git, SQLite database | `127.0.0.1:13000` (HTTP), `0.0.0.0:2222` (SSH) | Rootless account. Self-hosted Git repositories and OCI package registry. |
+| `svc-signoz` | SigNoz, ClickHouse, Keeper, OTel collector | `127.0.0.1:18080`, `14317` | Rootless account. Application metrics, distributed traces, and operations logs. |
+| `svc-wazuh` | Wazuh manager, indexer, dashboard | `127.0.0.1:15601`, `19200` | Rootless account. Central SIEM, FIM, security detections, and agent manager. |
+| `svc-runner` | Forgejo Actions runner + rootless Podman | No listening ports | Rootless account. Executes CI workflows inside disposable Podman containers. |
+| `svc-scrapecast` | On-box product application stack | `127.0.0.1:43147`, `43148` | Rootless account. Isolated product web and API services. |
+| **Sensor Users** | Suricata, Zeek, YAF, SiLK | Passive packet capture | Dedicated unprivileged system accounts without shell or login permissions. |
 
-### What is installed
+Each rootless service account is locked (`/usr/sbin/nologin`), has no sudo privileges, possesses a private `0700` home directory, and operates within a non-overlapping subordinate UID/GID range (`subuid`/`subgid`).
 
-| Boundary | Components | Exposure |
+---
+
+### CIS Debian 13 Hardening
+
+The `base` role implements baseline controls oriented around the CIS Debian 13 benchmark:
+- **Authentication & SSH**: Disables SSH password authentication, root login, X11 forwarding, and agent forwarding; enforces strong cryptographic MACs and ciphers; requires password-authenticated sudo for `ops`.
+- **System Integrity**: Configures `auditd` kernel auditing, deterministic Podman journal logging, `rsyslog` logging, and file integrity monitoring (FIM) paths for host configuration.
+- **Firewall Policy**: Implements default-deny inbound and forward filtering in native `nftables`. Outbound traffic is permitted for DNS, NTP, ACME, image pulls, and security updates.
+- **Fail2ban Integration**: Watches OpenSSH and Forgejo authentication failures; dynamically adds offending IPs to the `inet f2b-table` nftables set and WAF blocklist.
+
+---
+
+### Why TLS-ALPN Needs a Public IP
+
+`traefik_acme_challenge: tls` uses Let's Encrypt TLS-ALPN-01 validation. Let's Encrypt looks up your hostname in public DNS, connects to that IP on TCP/443, and completes a specialized TLS handshake using the `acme-tls/1` protocol. Traefik serves a short-lived certificate to prove ownership.
+
+Because Let's Encrypt must connect directly to TCP/443, TLS-ALPN cannot work behind NAT or on private IPs (e.g. local Vagrant VMs). For private environments, set `traefik_acme_challenge: dns` and provide Cloudflare API credentials. Traefik will then create an `_acme-challenge` DNS TXT record without requiring inbound connectivity.
+
+---
+
+### Telemetry Architecture
+
+| Signal | Source | Destination |
 |---|---|---|
-| Host | nftables, OpenSSH, native OTel Collector, native Wazuh agent | `22/tcp`, `2222/tcp`, and `443/tcp`; ICMP/ICMPv6 stays allowed |
-| `svc-edge` | Traefik, ACME, security headers, rate limiting, OTLP | `0.0.0.0:443` |
-| `svc-waf` | Nginx + ModSecurity + OWASP Core Rule Set | `127.0.0.1:18090` |
-| `svc-auth` | Authentik server, worker, PostgreSQL | `127.0.0.1:19000`; metrics on `127.0.0.1:19300` |
-| `svc-forgejo` | Forgejo, SQLite | `127.0.0.1:13000` for HTTP; `0.0.0.0:2222` for git SSH |
-| `svc-signoz` | SigNoz, one ClickHouse, Keeper, PostgreSQL, ingester | UI and OTLP on loopback only |
-| `svc-wazuh` | Wazuh manager, indexer, dashboard | enrollment, agent, API, dashboard on loopback |
-| `svc-runner` | Forgejo Runner + that user's rootless Podman socket | no public listener |
-| `svc-scrapecast` | scrapecast Postgres + app images from Forgejo Packages | `127.0.0.1:43147` and `:43148`; HTTPS apex only |
-| Sensor users | Suricata, Zeek LTS, YAF + SiLK | capture only; no login or sudo |
+| **Metrics** | Host CPU/RAM/disk, WAF stub_status, Podman container stats, Traefik metrics | Host OTel Collector → SigNoz ClickHouse |
+| **Traces** | Traefik distributed traces, application OTLP traces | Host OTel Collector (`127.0.0.1:4317`) → SigNoz |
+| **Application Logs** | Traefik access logs, systemd operations logs (`signoz_operations_journal_units`) | Host OTel Collector (`127.0.0.1:4318`) → SigNoz |
+| **Security Events** | Auditd, auth logs, SSH, sudo, fail2ban, WAF detections, Suricata alerts, Zeek notices | Host Wazuh Agent → Wazuh Manager / Indexer |
 
-Each rootless account has a locked password, `/usr/sbin/nologin`, no extra groups, no sudo, a private `0700` home, and a non-overlapping subordinate UID/GID range. Container root is that unprivileged host account. Authentik, SigNoz, and Wazuh share one account per stack because their supported Compose design needs a shared network and volumes. Independent components get their own account.
+Security detections are strictly separated from operational metrics. Wazuh handles security events and Sigma detection rules, while SigNoz handles performance metrics and traces.
 
-Traefik does not get a Podman socket. Routes come from a static, read-only file. WAF traffic goes through the official OWASP CRS image, not Traefik's experimental Coraza WASM plugin. On `git.<domain>`, CRS skips restricted-extension and restricted-file rules so Forgejo can show repository files such as `.sh`, `.cfg`, and `.gitignore`. Hidden `/.git` paths stay denied. Git over HTTPS smart HTTP stays blocked; clone on SSH port 2222.
+---
 
-OpenSSH accepts public-key authentication for `ops` only. Root login and password authentication are disabled. `git@host:22` is not a host account. Clone with `ssh://git@git.<domain>:2222/owner/repo.git`.
+### Packet Visibility & Wazuh SIEM
 
-### Why TLS-ALPN needs a public IP
+- **Suricata**: Captures traffic on external WAN interface and `lo` using `AF_PACKET`. Generates `eve-security.json` alert/anomaly records ingested by Wazuh.
+- **Zeek**: Passive protocol analyzer that generates structured connection, notice, and protocol logs.
+- **YAF & SiLK**: Generates IPFIX flow records stored under `/var/lib/silk/data` for historical network forensics.
+- **Wazuh 5.x Integration**: Utilizes modern Sigma rules (`roles/wazuh_agent/files/engine/rules.json`) published via the Wazuh Content Manager. Pre-flight verification validates detection logic using the Wazuh logtest API before promotion to production.
 
-`traefik_acme_challenge: tls` uses Let's Encrypt TLS-ALPN-01. Let's Encrypt looks up the hostname in public DNS, connects to that IP on TCP/443 from the internet, and completes a TLS handshake using the protocol `acme-tls/1`. Traefik presents a short-lived certificate for that name. If the handshake succeeds, Let's Encrypt issues the real certificate.
+---
 
-A private address (typical Vagrant NAT) is not reachable from those servers. DNS-01 skips the connection: Traefik writes a TXT record through Cloudflare, Let's Encrypt reads that record, and the host can stay off the internet.
+### Backups and Recovery
 
-### Telemetry
+Off-site backups use `resticprofile` and `restic` targeting Backblaze B2 (or any S3-compatible object storage):
+1. **Enable Backups**: Set `backup_offsite_enabled: true` in `main.yml` and provide `backup_b2_*` credentials in `vault.yml`.
+2. **Scheduled Execution**: Systemd timers trigger automated staging dumps at `02:30:00` daily. Staging includes PostgreSQL databases (`authentik`, `signoz`, `scrapecast`), ClickHouse database dumps, Forgejo repositories/LFS/packages, Wazuh indexer snapshots, and Traefik `acme.json`.
+3. **Disaster Recovery**: To restore data, run the playbook with the `restore` tag:
+   ```bash
+   uv run ansible-playbook site.yml --tags restore --ask-vault-pass --ask-become-pass -e backup_restore_confirm=true
+   ```
+   Restic restores snapshots to `/var/lib/platform-backup/restore/` for manual inspection and volume re-population. Live volumes are never automatically overwritten.
 
-| Signal | Source |
-|---|---|
-| Latency, traffic, errors | Traefik OTLP metrics, traces, and access logs to the host collector |
-| Saturation | Host CPU/memory/disk/network, WAF stub_status, and per-account Podman container stats |
-| Logs | Direct OTLP application/access logs plus warning/error journals for platform and sensor service health |
-| App telemetry | Traefik OTLP logs over HTTP to `127.0.0.1:4318/v1/logs`. Metrics and traces over gRPC to `127.0.0.1:4317`. Scrapecast uses pasta `host.containers.internal:4318`. Prometheus scrape of Forgejo and Authentik. Authentik and Forgejo have no native traces. The CRS image has no request tracing module. |
+---
 
-The host collector is the only app OTLP ingest. It queues and exports to SigNoz on loopback gRPC `127.0.0.1:14317`. Raw IDS, authentication, firewall, package-change, and WAF events are intentionally excluded. Do not expose unauthenticated OTLP. For another host, use a mutually authenticated collector or a VPN and add a firewall rule on purpose.
+## Primary References
 
-Foundry's `replicas` field is 0-based: `replicas: 0` is one ClickHouse. `replicas: 1` starts a second node, and that pair will OOM an 8 GiB host during `system.metric_log` merges. The playbook caps the remaining node (`mem_limit` plus `max_server_memory_usage`) and deletes the ClickHouse and Keeper volumes when it sees the extra replica, then reforges Compose so only `clickhouse-0-0` remains. `podman-compose up` hangs forever on Foundry's `depends_on: service_healthy`, so the casting rewrites ClickHouse deps to `service_started` and vendors `histogramQuantile` instead of wget from GitHub at start. It waits for `SHOW CREATE TABLE signoz_traces.distributed_signoz_index_v3` before treating SigNoz as ready. The UI can listen before that table exists; that is the `failed to get tbl statement` error. Undersized hosts get a 4 GiB swap file. Postgres (users, dashboards) stays. Set `signoz_reset_telemetrystore: true` once if the store is already a single node with leftover two-replica schema.
-
-The playbook upserts a small SigNoz alert set when `signoz_api_token` is in the vault: root and `/var/lib` disk, ClickHouse container memory, otelcol export failures from the operations journal, failed `secure-*`/sensor units, and Traefik 5xx plus p95. Channels start empty, so they show in the UI until you attach a notifier. Retention is still yours to set. Security detections stay in Wazuh.
-
-### Packet visibility and Wazuh
-
-Default `sensor_interfaces` is the WAN NIC plus `lo`. That captures encrypted WAN traffic and the decrypted loopback path to backends. Add extra host-visible bridge or veth names yourself.
-
-Rootless Podman uses a per-user network. Those container-to-container links are not host NICs, so Suricata, Zeek, and YAF on the host do not see every database packet on those private links. The playbook does not pretend otherwise. Full east-west inspection means a rootful bridge with a tap, eBPF, or a dedicated sensor host. That is a different trust model.
-
-Capturing WAN and loopback duplicates observations. Size disks accordingly.
-
-A native Wazuh agent on the host collects filtered SSH, sudo, identity, auditd, fail2ban, nftables, package, selected container, IDS, and WAF events. It does not forward every container or journal record. FIM covers host security policy, systemd, package/repository, sensor, telemetry, Trivy, rootless runtime, and stack configuration. There is no privileged Wazuh process inside each vendor container. If a control literally requires an agent PID in every container, this design does not meet that wording.
-
-Wazuh 5.0.0-beta5 dropped classic `etc/rules` XML, `wazuh-logtest`, and `PUT /logtest`. The 4.x files under `roles/wazuh_agent/templates/platform-security-rules.xml.j2` and `roles/trivy/templates/trivy-rules.xml.j2` are a mapping of the old ids only; the manager does not evaluate them. Live detections are Sigma in `roles/wazuh_agent/files/engine/rules.json`, published Draft → Test → Custom through the indexer Content Manager. Ansible proves a representative event against Test with `/_plugins/_content_manager/logtest` before promoting to Custom.
-
-Use **Threat Hunting** on `wazuh-findings-v5-*`, not `wazuh-alerts-*`. Filter on rule title or `sigma_id` (`platform-100400`, `trivy-100307`). Native journald metadata is used by the agent-side filters; Wazuh forwards those records in syslog form, so investigation uses the decoded program/message fields rather than `CONTAINER_NAME` or `_SYSTEMD_UNIT`.
-
-- `Host firewall dropped an inbound packet` (`platform-100400`) for nftables drops. Frequency correlation (old 100401) does not exist in 5.x.
-- `Host authentication or privilege failure` and `Identity or source-control authentication failure` for SSH, sudo, Authentik, and Forgejo.
-- `ModSecurity CRS detected or blocked a request` and Traefik 401/403/429 / TLS handshake errors.
-- Suricata alert/anomaly and Zeek notice/intel/signature/metadata titles for network IDS.
-- `A host security control reported a failure` for sshd/auditd/fail2ban health.
-- `Trivy HIGH finding`, `Trivy CRITICAL finding`, and `Trivy scan failed`.
-
-Use Wazuh's dedicated **File Integrity Monitoring**, **Configuration Assessment**, and **Vulnerability Detection** views for those datasets. Wazuh indexes meaningful rule matches rather than every raw network flow. SiLK flow records remain queryable with SiLK tools under `/var/lib/silk/data`; they are not text logs and should not be copied into Wazuh. Existing fail2ban/nftables actions remain the only automatic blocking path; Wazuh active response is not enabled.
-
-Apply the complete routing boundary with `ansible-playbook site.yml --tags base,platform,telemetry,sensors,wazuh_agent,verify`. The base tag installs auditd and deterministic Podman journal tags; the other tags update both collectors, sensor outputs, engine content, and end-to-end checks.
-
-For the publisher/login-outcome and ClickHouse export fixes on an existing deployment, use:
-
-```bash
-uv run ansible-playbook site.yml --tags platform,wazuh_agent,backup,verify --ask-vault-pass --ask-become-pass
-```
-
-Preflight runs automatically. Do not select `restore` during deployment. Publisher code, configuration, and progress now live in root-only `/usr/local/libexec/platform-wazuh/`, `/etc/platform-wazuh/`, and `/var/lib/platform-wazuh/`. Legacy stack `engine/` files remain untouched and unused. The existing CA is pinned once into the protected configuration directory; subsequent runs do not silently replace it. Credentials and CA identities are not rotated.
-
-Publishing discovers resources through authenticated Content Manager searches rather than trusting legacy UUID state. Before changing content, it runs audit login fixtures against the discovered Standard `auditd` integration. It then tests managed content in Test and repeats Standard/Custom production checks after promotion. Failed, missing, unknown, and contradictory outcomes must never have a successful-authentication title. Wazuh Standard rules are read-only: if the installed vendor rule still mislabels an event, deployment stops with the offending rule IDs/titles. No authentication events are suppressed and no vendor system indices are modified. Obtain a supported vendor correction before retrying. Existing indexed findings are unchanged.
-
-`--tags verify` performs live fixtures; a progress file alone is not evidence of verification. Local contract/render tests do not replace live Wazuh fixture execution or restoring an archive into an isolated ClickHouse instance. Both are required before declaring production acceptance complete.
-
-Trivy scans the image IDs used by running containers once per rootless account. Each account gets a private cache and can access only its own Podman socket. Raw reports stay under `/var/log/trivy/<account>/`; Wazuh receives normalized JSON events for new and resolved findings, scan summaries, and failures. Hunt with the Trivy titles above. Initial scans are staggered, and later scans run daily with randomized delay.
-
-Apply the manager rules, scanners, and agent reader together with `--tags platform,trivy,wazuh_agent`. To scan one account immediately, run `sudo systemctl start trivy-scan-svc-wazuh.service` (replace the account suffix as needed). After all initial timers have fired, set `trivy_verify_scan_results: true` and run `--tags verify` to require a completed report from every account.
-
-Suricata sends alerts, anomalies, and selected investigation metadata to Wazuh. Zeek sends only notices, intelligence/signature matches, weird activity, and selected file/TLS/SSH metadata. SiLK and YAF operational failures stay in the warning-level SigNoz health feed; raw flow records remain in SiLK. Calling every Zeek or SiLK record an alert would be wrong.
-
-Suricata's yaml has no CPU-percent cap. The default `threads: auto` starts one worker per core and will fill a 4 vCPU lab. This playbook sets `suricata_af_packet_threads: 1` (one worker per capture interface) and `suricata_detect_thread_ratio: 0.5` in `/etc/suricata/platform-local.yaml`. Raise the thread count on a large VPS if `eve-security.json` or the service journal shows kernel drops.
-
-### Supply chain
-
-Review release notes before changing a pinned version or checksum. Keep Wazuh manager and agent on the same version. Changing a Wazuh indexer identity after initialization needs Wazuh's security-admin procedure; editing Compose and the mounted hash is not enough.
-
-Standalone binaries and source archives are checksum-pinned. Repository keys come from official endpoints. Most OCI images use version tags, not digests. For strict provenance, mirror and sign internally, then replace the URLs and image references.
-
-### Backups and recovery
-
-Off-box copies use resticprofile 0.33.1 plus Debian restic, destination Backblaze B2 over the S3 API (`s3:s3.<region>.backblazeb2.com/<bucket>/platform`). The native `b2:` backend hangs on this host. There is no backup web UI.
-
-Set `backup_offsite_enabled: true` and put `backup_b2_key_id`, `backup_b2_application_key`, `backup_restic_password`, `backup_b2_bucket`, and `backup_b2_endpoint` in the vault. Ansible then installs dump hooks, resticprofile YAML, and systemd timers. A run-before hook writes recoverable artifacts to `/var/lib/platform-backup/staging`: Authentik and scrapecast `pg_dump`, Authentik media/certificates, SigNoz Postgres, every non-system ClickHouse database, `acme.json`, Wazuh manager and stack configuration (including its TLS material), and a cleanly stopped Wazuh Indexer data archive. Forgejo is briefly stopped while its complete data and configuration volumes are archived, including repositories, LFS, attachments, Actions artifacts, and packages. Required services or exports failing makes the backup fail, so retention pruning cannot turn an incomplete staging set into a green backup. Only paths below `/var/lib/platform-backup` are accepted for destructive staging/restore cleanup.
-
-```bash
-uv run ansible-playbook site.yml --tags backup --ask-vault-pass --ask-become-pass
-```
-
-Restore is a separate, harder gate. It writes the latest snapshot to `/var/lib/platform-backup/restore` and stops. You copy dumps onto a staging host or into new volumes by hand.
-
-```bash
-uv run ansible-playbook site.yml --tags restore --ask-vault-pass --ask-become-pass \
-  -e backup_restore_confirm=true
-```
-
-Also keep the encrypted vault on the controller. `/var/lib/silk/data` is optional (`backup_include_silk`). Provider snapshots stay crash-consistent only.
-
-If SSH or TLS fails after lockdown, use the provider console. Restore a corrected `/etc/nftables.conf` and restart nftables. Do not re-enable root or password SSH as routine recovery.
-
-## Primary references
-
-- [Debian 13 Podman](https://packages.debian.org/trixie/podman) and [OpenSSH](https://packages.debian.org/trixie/openssh-server)
-- [Traefik ACME](https://doc.traefik.io/traefik/https/acme/), [entrypoints](https://doc.traefik.io/traefik/routing/entrypoints/), [tracing](https://doc.traefik.io/traefik/reference/install-configuration/observability/tracing/), [metrics](https://doc.traefik.io/traefik/reference/install-configuration/observability/metrics/), [logs](https://doc.traefik.io/traefik/reference/install-configuration/observability/logs-and-accesslogs/)
-- [OWASP CRS container images](https://github.com/coreruleset/modsecurity-crs-docker)
-- [Authentik Compose](https://docs.goauthentik.io/install-config/install/docker-compose/), [Google source](https://docs.goauthentik.io/users-sources/sources/social-logins/google/cloud/), [proxy providers](https://docs.goauthentik.io/add-secure-apps/providers/proxy/)
-- [Forgejo rootless](https://forgejo.org/docs/v15.0/admin/installation/docker/) and [Runner with rootless Podman](https://forgejo.org/docs/v15.0/admin/actions/installation/binary/)
-- [Forgejo Packages](https://forgejo.org/docs/v15.0/user/packages/) and [Actions OIDC](https://forgejo.org/docs/v15.0/user/actions/security-openid-connect/)
-- [SigNoz Docker](https://signoz.io/docs/install/docker/) and [Podman metrics](https://signoz.io/docs/metrics-management/opentelemetry-podman-metrics/)
-- [Wazuh agent](https://documentation.wazuh.com/current/installation-guide/wazuh-agent/wazuh-agent-package-linux.html), [container deployment](https://documentation.wazuh.com/current/deployment-options/docker/wazuh-container.html), [password rotation](https://documentation.wazuh.com/current/deployment-options/docker/changing-default-password.html), [capacity](https://documentation.wazuh.com/current/quickstart.html)
-- [Suricata AF_PACKET](https://docs.suricata.io/en/latest/capture-hardware/af-packet.html), [Zeek](https://docs.zeek.org/en/current/install.html), [YAF](https://tools.netsa.cert.org/yaf/yaf.html), [SiLK sensor.conf](https://tools.netsa.cert.org/silk/sensor.conf.html)
-- [OTel Podman receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/podmanreceiver/README.md) and [journald receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/journaldreceiver/README.md)
-- [Cloudflare API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/), [lego Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/), [Ansible cloudflare_dns](https://docs.ansible.com/ansible/latest/collections/community/general/cloudflare_dns_module.html)
+- [Debian 13 Podman Documentation](https://packages.debian.org/trixie/podman) and [OpenSSH](https://packages.debian.org/trixie/openssh-server)
+- [Traefik v3 Documentation](https://doc.traefik.io/traefik/)
+- [OWASP ModSecurity Core Rule Set](https://coreruleset.org/)
+- [Authentik Documentation](https://docs.goauthentik.io/)
+- [Forgejo Administrator Guide](https://forgejo.org/docs/latest/admin/)
+- [SigNoz Documentation](https://signoz.io/docs/)
+- [Wazuh 5.x SIEM & XDR Guide](https://documentation.wazuh.com/)
+- [Suricata Documentation](https://docs.suricata.io/)
+- [Zeek Network Security Monitor](https://docs.zeek.org/)
+- [CERT NetSA SiLK Flow Tools](https://tools.netsa.cert.org/silk/)

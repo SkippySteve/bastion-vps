@@ -1,6 +1,7 @@
 ---
 - name: Remove leftover host Forgejo SSH passthrough
   ansible.builtin.import_tasks: forgejo_ssh_cleanup.yml
+  tags: [platform, forgejo]
 
 - name: Define the rootless application stacks
   ansible.builtin.set_fact:
@@ -31,9 +32,31 @@
         compose: compose.yml
         after: "network-online.target"
 
+- name: Determine targeted platform stack units
+  ansible.builtin.set_fact:
+    platform_active_stack_units: >-
+      {{
+        platform_rootless_stack_units
+        if (
+          ansible_run_tags is not defined or
+          'all' in ansible_run_tags or
+          'platform' in ansible_run_tags or
+          'setup' in ansible_run_tags
+        )
+        else (
+          platform_rootless_stack_units
+          | selectattr('account', 'in', ansible_run_tags)
+          | list
+          + (platform_rootless_stack_units | selectattr('account', 'equalto', 'auth') | list if 'authentik' in ansible_run_tags else [])
+          + (platform_rootless_stack_units | selectattr('account', 'equalto', 'edge') | list if 'traefik' in ansible_run_tags else [])
+          + (platform_rootless_stack_units | selectattr('account', 'equalto', 'wazuh') | list if ('wazuh_server' in ansible_run_tags or 'wazuh' in ansible_run_tags) else [])
+        )
+      }}
+
 - name: Remember the SigNoz compose services
   ansible.builtin.set_fact:
     platform_signoz_services: "{{ (platform_rootless_stack_units | selectattr('name', 'equalto', 'secure-signoz') | first).compose_services }}"
+  tags: [platform, signoz]
 
 - name: Create application stack directories
   ansible.builtin.file:
@@ -42,14 +65,18 @@
     owner: "{{ service_accounts[item.account].name }}"
     group: "{{ service_accounts[item.account].name }}"
     mode: "0700"
-  loop:
-    - {account: edge, directory: edge/config/dynamic}
-    - {account: edge, directory: edge/tls}
-    - {account: waf, directory: waf}
-    - {account: auth, directory: auth}
-    - {account: forgejo, directory: forgejo}
-    - {account: signoz, directory: signoz}
-    - {account: wazuh, directory: wazuh}
+  loop: >-
+    {{
+      [
+        {'account': 'edge', 'directory': 'edge/config/dynamic'},
+        {'account': 'edge', 'directory': 'edge/tls'},
+        {'account': 'waf', 'directory': 'waf'},
+        {'account': 'auth', 'directory': 'auth'},
+        {'account': 'forgejo', 'directory': 'forgejo'},
+        {'account': 'signoz', 'directory': 'signoz'},
+        {'account': 'wazuh', 'directory': 'wazuh'}
+      ] | selectattr('account', 'in', (platform_active_stack_units | map(attribute='account') | list)) | list
+    }}
 
 - name: Create the Traefik ACME state file
   ansible.builtin.file:
@@ -60,6 +87,7 @@
     owner: "{{ service_accounts.edge.name }}"
     group: "{{ service_accounts.edge.name }}"
     mode: "0600"
+  tags: [platform, edge, traefik]
 
 - name: Render the lab TLS OpenSSL config
   ansible.builtin.template:
@@ -70,6 +98,7 @@
     mode: "0600"
   when: not (traefik_acme_enabled | bool)
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Generate the lab TLS certificate authority
   ansible.builtin.command:
@@ -95,6 +124,7 @@
   become_user: "{{ service_accounts.edge.name }}"
   when: not (traefik_acme_enabled | bool)
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Generate the lab server private key
   ansible.builtin.command:
@@ -109,6 +139,7 @@
   become: true
   become_user: "{{ service_accounts.edge.name }}"
   when: not (traefik_acme_enabled | bool)
+  tags: [platform, edge, traefik]
 
 - name: Issue the lab server certificate from the local CA
   ansible.builtin.shell: |
@@ -126,6 +157,7 @@
   become_user: "{{ service_accounts.edge.name }}"
   when: not (traefik_acme_enabled | bool)
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Fetch the lab CA onto the controller
   ansible.builtin.fetch:
@@ -133,6 +165,7 @@
     dest: "{{ playbook_dir }}/tls/lab-ca.pem"
     flat: true
   when: not (traefik_acme_enabled | bool)
+  tags: [platform, edge, traefik]
 
 - name: Remove Traefik Cloudflare DNS-01 credentials when unused
   ansible.builtin.file:
@@ -140,6 +173,7 @@
     state: absent
   when: not ((traefik_acme_enabled | bool) and (traefik_acme_challenge | default('tls') == 'dns'))
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Render Traefik Cloudflare DNS-01 credentials
   ansible.builtin.template:
@@ -153,6 +187,7 @@
     - traefik_acme_challenge | default('tls') == 'dns'
   no_log: true
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Render edge proxy files
   ansible.builtin.template:
@@ -167,6 +202,7 @@
     - {src: traefik-dynamic.yml.j2, dest: config/dynamic/platform.yml}
   no_log: true
   notify: Restart secure edge
+  tags: [platform, edge, traefik]
 
 - name: Create an empty WAF fail2ban deny list
   ansible.builtin.copy:
@@ -177,6 +213,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
     force: false
+  tags: [platform, waf]
 
 - name: Render the WAF Compose definition
   ansible.builtin.template:
@@ -186,6 +223,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0600"
   notify: Restart secure WAF
+  tags: [platform, waf]
 
 - name: Render the WAF nginx template for the unprivileged container user
   ansible.builtin.template:
@@ -195,6 +233,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
+  tags: [platform, waf]
 
 - name: Render CRS exclusions for Forgejo repository file views
   ansible.builtin.template:
@@ -204,6 +243,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
+  tags: [platform, waf]
 
 - name: Render the Authentik stack
   ansible.builtin.template:
@@ -214,6 +254,7 @@
     mode: "0600"
   no_log: true
   notify: Restart secure Authentik
+  tags: [platform, auth, authentik]
 
 - name: Render the Forgejo stack
   ansible.builtin.template:
@@ -224,6 +265,7 @@
     mode: "0600"
   no_log: true
   notify: Restart secure Forgejo
+  tags: [platform, forgejo]
 
 - name: Create the versioned Foundry installation directory
   ansible.builtin.file:
@@ -232,6 +274,7 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [platform, signoz]
 
 - name: Ensure the local source cache exists
   ansible.builtin.file:
@@ -240,12 +283,14 @@
     owner: root
     group: root
     mode: "0755"
+  tags: [platform, signoz]
 
 - name: Create a swap file on undersized hosts
   when:
     - allow_undersized_host | bool
     - (undersized_swap_mb | int) > 0
     - (ansible_swaptotal_mb | int) < 1024
+  tags: [platform, signoz]
   block:
     - name: Allocate the undersized-host swap file
       ansible.builtin.command:
@@ -299,6 +344,7 @@
     owner: "{{ service_accounts.signoz.name }}"
     group: "{{ service_accounts.signoz.name }}"
     mode: "0755"
+  tags: [platform, signoz]
 
 - name: Download histogram-quantile for ClickHouse user scripts
   ansible.builtin.get_url:
@@ -308,6 +354,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [platform, signoz]
 
 - name: Unpack histogram-quantile
   ansible.builtin.unarchive:
@@ -316,6 +363,7 @@
     remote_src: true
     extra_opts: [--no-same-owner]
     creates: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/user-scripts/histogram-quantile"
+  tags: [platform, signoz]
 
 - name: Install histogramQuantile for the Foundry user-scripts volume
   ansible.builtin.copy:
@@ -325,6 +373,7 @@
     owner: "{{ service_accounts.signoz.name }}"
     group: "{{ service_accounts.signoz.name }}"
     mode: "0755"
+  tags: [platform, signoz]
 
 - name: Download the pinned SigNoz Foundry release
   ansible.builtin.get_url:
@@ -334,6 +383,7 @@
     owner: root
     group: root
     mode: "0644"
+  tags: [platform, signoz]
 
 - name: Unpack the pinned Foundry release
   ansible.builtin.unarchive:
@@ -342,6 +392,7 @@
     remote_src: true
     extra_opts: [--strip-components=2, --no-same-owner]
     creates: "/opt/foundry/{{ foundry_version }}/foundryctl"
+  tags: [platform, signoz]
 
 - name: Link the Foundry CLI into the system path
   ansible.builtin.file:
@@ -349,6 +400,7 @@
     dest: /usr/local/bin/foundryctl
     state: link
     force: true
+  tags: [platform, signoz]
 
 - name: Render the pinned SigNoz casting
   ansible.builtin.template:
@@ -359,17 +411,20 @@
     mode: "0600"
   no_log: true
   register: platform_signoz_casting
+  tags: [platform, signoz]
 
 - name: Check for a previously forged SigNoz deployment
   ansible.builtin.stat:
     path: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/pours/deployment/compose.yaml"
   register: platform_signoz_compose
+  tags: [platform, signoz]
 
 - name: Read the previously forged SigNoz Compose
   ansible.builtin.slurp:
     src: "/var/lib/{{ service_accounts.signoz.name }}/stacks/signoz/pours/deployment/compose.yaml"
   register: platform_signoz_compose_raw
   when: platform_signoz_compose.stat.exists
+  tags: [platform, signoz]
 
 - name: List SigNoz Podman volumes
   ansible.builtin.command:
@@ -386,6 +441,7 @@
   register: platform_signoz_volumes
   changed_when: false
   failed_when: false
+  tags: [platform, signoz]
 
 - name: Decide whether ClickHouse data must be rebuilt for one replica
   ansible.builtin.set_fact:
@@ -405,6 +461,7 @@
         )
         or ('signoz-telemetrystore-0-1-data' in (platform_signoz_volumes.stdout_lines | default([])))
       }}
+  tags: [platform, signoz]
 
 - name: Stop SigNoz before dropping the extra ClickHouse replica
   ansible.builtin.systemd_service:
@@ -412,6 +469,7 @@
     state: stopped
   when: platform_signoz_rebuild_store | bool
   failed_when: false
+  tags: [platform, signoz]
 
 - name: Discard ClickHouse and Keeper volumes from the two-replica layout
   ansible.builtin.command:
@@ -432,6 +490,7 @@
   changed_when: true
   when: platform_signoz_rebuild_store | bool
   notify: Restart secure SigNoz
+  tags: [platform, signoz]
 
 - name: Forge the official SigNoz Compose deployment
   ansible.builtin.command:
@@ -455,6 +514,7 @@
     or (platform_signoz_rebuild_store | bool)
   changed_when: true
   notify: Restart secure SigNoz
+  tags: [platform, signoz]
 
 - name: Stop podman-compose from blocking boot on healthchecks
   ansible.builtin.replace:
@@ -462,10 +522,12 @@
     regexp: 'service_healthy'
     replace: 'service_started'
   notify: Restart secure SigNoz
+  tags: [platform, signoz]
 
 - name: Remember the Wazuh stack directory
   ansible.builtin.set_fact:
     wazuh_stack_dir: "/var/lib/{{ service_accounts.wazuh.name }}/stacks/wazuh/upstream/single-node"
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Clone the exact Wazuh container configuration revision
   ansible.builtin.git:
@@ -476,22 +538,26 @@
     update: true
   become: true
   become_user: "{{ service_accounts.wazuh.name }}"
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Check for a previously rendered Wazuh Compose
   ansible.builtin.stat:
     path: "{{ wazuh_stack_dir }}/compose.secure.yml"
   register: platform_wazuh_compose
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Read any previously rendered Wazuh Compose
   ansible.builtin.slurp:
     src: "{{ wazuh_stack_dir }}/compose.secure.yml"
   register: platform_wazuh_compose_raw
   when: platform_wazuh_compose.stat.exists
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Check for a successful Wazuh 5 volume seed
   ansible.builtin.stat:
     path: "{{ wazuh_stack_dir }}/.wazuh5-seeded"
   register: platform_wazuh_seeded
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Decide whether Wazuh volumes must be discarded
   ansible.builtin.set_fact:
@@ -504,6 +570,7 @@
           and '/var/ossec' in (platform_wazuh_compose_raw.content | default('') | b64decode)
         )
       }}
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Stop Wazuh before dropping volumes
   ansible.builtin.systemd_service:
@@ -511,6 +578,7 @@
     state: stopped
   when: platform_wazuh_reset_store | bool
   failed_when: false
+  tags: [platform, wazuh_server, wazuh]
 
 - name: List Wazuh Podman volumes
   ansible.builtin.command:
@@ -527,6 +595,7 @@
   register: platform_wazuh_volumes
   changed_when: false
   when: platform_wazuh_reset_store | bool
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Discard Wazuh volumes that cannot seed under Podman
   ansible.builtin.command:
@@ -541,6 +610,7 @@
     - platform_wazuh_volumes.stdout_lines | length > 0
   changed_when: true
   notify: Restart secure Wazuh
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Create Wazuh certificate directories
   ansible.builtin.file:
@@ -555,6 +625,7 @@
     - "{{ wazuh_stack_dir }}/config/wazuh_manager/certs"
     - "{{ wazuh_stack_dir }}/config/wazuh_manager/rules"
     - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs"
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Install the Wazuh 5 certificate generator
   ansible.builtin.template:
@@ -563,8 +634,11 @@
     owner: "{{ service_accounts.wazuh.name }}"
     group: "{{ service_accounts.wazuh.name }}"
     mode: "0700"
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Back up and remove dependent Wazuh certificates for explicit rotation
+  when: wazuh_rotate_certificates | bool
+  tags: [platform, wazuh_server, wazuh]
   block:
     - name: Archive existing Wazuh certificates before rotation
       ansible.builtin.archive:
@@ -594,7 +668,6 @@
         - "{{ wazuh_stack_dir }}/config/wazuh_manager/certs/wazuh.manager-key.pem"
         - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs/wazuh.dashboard.pem"
         - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs/wazuh.dashboard-key.pem"
-  when: wazuh_rotate_certificates | bool
 
 - name: Generate Wazuh 5 TLS certificates
   ansible.builtin.command:
@@ -606,6 +679,7 @@
   become_user: "{{ service_accounts.wazuh.name }}"
   environment:
     HOME: "/var/lib/{{ service_accounts.wazuh.name }}"
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Find Wazuh PEM files that containers bind-mount
   ansible.builtin.find:
@@ -616,6 +690,7 @@
       - "{{ wazuh_stack_dir }}/config/wazuh_dashboard/certs"
     patterns: "*.pem"
   register: platform_wazuh_pems
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Apply least-privilege permissions to Wazuh certificates and private keys
   ansible.builtin.file:
@@ -625,6 +700,7 @@
   loop_control:
     label: "{{ item.path }}"
   notify: Restart secure Wazuh
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Trust the generated Wazuh CA at the WAF boundary
   ansible.builtin.copy:
@@ -635,6 +711,7 @@
     group: "{{ service_accounts.waf.name }}"
     mode: "0644"
   notify: Restart secure WAF
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Replace the Wazuh demo identities for the unprivileged indexer user
   ansible.builtin.template:
@@ -645,6 +722,7 @@
     mode: "0644"
   no_log: true
   notify: Restart secure Wazuh
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Render the loopback-only Wazuh Compose definition
   ansible.builtin.template:
@@ -655,6 +733,7 @@
     mode: "0600"
   no_log: true
   notify: Restart secure Wazuh
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Remember that Wazuh 5 volumes were prepared for Podman
   ansible.builtin.file:
@@ -664,6 +743,7 @@
     group: "{{ service_accounts.wazuh.name }}"
     mode: "0644"
   changed_when: false
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Install root-managed wrappers for the rootless Compose stacks
   ansible.builtin.template:
@@ -672,25 +752,29 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ platform_rootless_stack_units }}"
+  loop: "{{ platform_active_stack_units }}"
   notify: Reload systemd
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
 - name: Apply platform unit changes
   ansible.builtin.meta: flush_handlers
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
 - name: Enable and start the rootless application stacks
   ansible.builtin.systemd_service:
     name: "{{ item.name }}.service"
     enabled: true
     state: started
-  loop: "{{ platform_rootless_stack_units | rejectattr('name', 'equalto', 'secure-signoz') }}"
+  loop: "{{ platform_active_stack_units | rejectattr('name', 'equalto', 'secure-signoz') }}"
   loop_control:
     label: "{{ item.name }}"
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
 - name: Enable SigNoz on boot
   ansible.builtin.systemd_service:
     name: secure-signoz.service
     enabled: true
+  tags: [platform, signoz]
 
 - name: Pull the Authentik image into the svc-auth store
   ansible.builtin.command:
@@ -707,6 +791,7 @@
   poll: 15
   register: platform_authentik_pull
   changed_when: platform_authentik_pull.stdout is search('(?i)writing manifest|copied|downloading')
+  tags: [platform, auth, authentik]
 
 - name: Recreate any Compose services the oneshot unit skipped
   ansible.builtin.command:
@@ -724,9 +809,10 @@
     HOME: "/var/lib/{{ service_accounts[item.account].name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts[item.account].uid }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts[item.account].uid }}/bus"
-  loop: "{{ platform_rootless_stack_units | rejectattr('name', 'equalto', 'secure-signoz') }}"
+  loop: "{{ platform_active_stack_units | rejectattr('name', 'equalto', 'secure-signoz') }}"
   loop_control:
     label: "{{ item.name }}"
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
 - name: Create SigNoz containers without starting them
   ansible.builtin.command:
@@ -738,6 +824,7 @@
     HOME: "/var/lib/{{ service_accounts.signoz.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.signoz.uid }}/bus"
+  tags: [platform, signoz]
 
 - name: Start existing SigNoz containers
   ansible.builtin.command:
@@ -750,12 +837,14 @@
   environment:
     HOME: "/var/lib/{{ service_accounts.signoz.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
+  tags: [platform, signoz]
 
 - name: Mark the SigNoz unit started
   ansible.builtin.systemd_service:
     name: secure-signoz.service
     state: started
     no_block: true
+  tags: [platform, signoz]
 
 - name: Wait until ClickHouse answers queries
   ansible.builtin.command:
@@ -776,6 +865,7 @@
   retries: 36
   delay: 5
   until: platform_signoz_ch_ping.rc == 0
+  tags: [platform, signoz]
 
 - name: Run the SigNoz ClickHouse migrator
   ansible.builtin.command:
@@ -794,6 +884,7 @@
     HOME: "/var/lib/{{ service_accounts.signoz.name }}"
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.signoz.uid }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.signoz.uid }}/bus"
+  tags: [platform, signoz]
 
 - name: Wait until SigNoz ClickHouse tables exist
   ansible.builtin.command:
@@ -814,6 +905,7 @@
   retries: 90
   delay: 10
   until: platform_signoz_tbl.rc == 0
+  tags: [platform, signoz]
 
 - name: Wait for primary loopback services
   ansible.builtin.wait_for:
@@ -821,28 +913,36 @@
     port: "{{ item.port }}"
     delay: 1
     timeout: 600
-  loop:
-    - {port: "{{ waf_http_port }}", name: waf}
-    - {port: "{{ authentik_http_port }}", name: authentik}
-    - {port: "{{ forgejo_http_port }}", name: forgejo}
-    - {port: "{{ signoz_ui_port }}", name: signoz}
-    - {port: "{{ signoz_grpc_port }}", name: signoz-otlp-grpc}
-    - {port: "{{ signoz_http_port }}", name: signoz-otlp-http}
-    - {port: "{{ wazuh_dashboard_port }}", name: wazuh}
-    - {port: "{{ wazuh_indexer_port }}", name: wazuh-indexer}
-    - {port: 15500, name: wazuh-api}
-    - {port: "{{ public_port }}", name: traefik}
+  loop: >-
+    {{
+      [
+        {'port': waf_http_port, 'name': 'waf', 'account': 'waf'},
+        {'port': authentik_http_port, 'name': 'authentik', 'account': 'auth'},
+        {'port': forgejo_http_port, 'name': 'forgejo', 'account': 'forgejo'},
+        {'port': signoz_ui_port, 'name': 'signoz', 'account': 'signoz'},
+        {'port': signoz_grpc_port, 'name': 'signoz-otlp-grpc', 'account': 'signoz'},
+        {'port': signoz_http_port, 'name': 'signoz-otlp-http', 'account': 'signoz'},
+        {'port': wazuh_dashboard_port, 'name': 'wazuh', 'account': 'wazuh'},
+        {'port': wazuh_indexer_port, 'name': 'wazuh-indexer', 'account': 'wazuh'},
+        {'port': 15500, 'name': 'wazuh-api', 'account': 'wazuh'},
+        {'port': public_port, 'name': 'traefik', 'account': 'edge'}
+      ] | selectattr('account', 'in', (platform_active_stack_units | map(attribute='account') | list)) | list
+    }}
   loop_control:
     label: "{{ item.name }} :{{ item.port }}"
+  tags: [platform, edge, traefik, waf, auth, authentik, forgejo, signoz, wazuh_server]
 
 - name: Wire the Wazuh manager indexer connector
   ansible.builtin.import_tasks: wazuh_indexer.yml
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Replace the default Wazuh server API password
   ansible.builtin.import_tasks: wazuh_api.yml
+  tags: [platform, wazuh_server, wazuh]
 
 - name: Configure the embedded Authentik outpost
   ansible.builtin.import_tasks: authentik_outpost.yml
+  tags: [platform, auth, authentik]
 
 - name: Resolve the Forgejo command inside the pinned container image
   ansible.builtin.command:
@@ -860,6 +960,7 @@
     XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.forgejo.uid }}"
   register: platform_forgejo_cli
   changed_when: false
+  tags: [platform, forgejo]
 
 - name: Check whether the Forgejo administrator exists
   ansible.builtin.command:
@@ -879,6 +980,7 @@
   register: platform_forgejo_users
   changed_when: false
   no_log: true
+  tags: [platform, forgejo]
 
 - name: Create the initial Forgejo administrator
   ansible.builtin.command:
@@ -906,3 +1008,4 @@
   when: forgejo_admin_user not in platform_forgejo_users.stdout
   changed_when: true
   no_log: true
+  tags: [platform, forgejo]

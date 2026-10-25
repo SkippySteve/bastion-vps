@@ -1,5 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 report=/var/lib/platform-openscap/report.xml
-oscap xccdf eval --results "$report" /usr/share/xml/scap/ssg/content/ssg-debian13-xccdf.xml || true
-printf '{"scanner":"openscap","report":"%s","timestamp":"%s"}\n' "$report" "$(date -u +%FT%TZ)" | curl --fail --silent --show-error -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:{{ victoria_logs_port }}/insert/jsonline
+mkdir -p /var/log/platform-security
+set +e
+oscap xccdf eval --results "$report" /usr/share/xml/scap/ssg/content/ssg-debian13-xccdf.xml
+status=$?
+set -e
+outcome=passed
+if [ "$status" -eq 2 ]; then outcome=non_compliant; fi
+if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then outcome=error; fi
+printf '{"security_tool":"openscap","log_type":"compliance_scan","outcome":"%s","exit_code":%s,"report":"%s","timestamp":"%s"}\n' "$outcome" "$status" "$report" "$(date -u +%FT%TZ)" >> /var/log/platform-security/openscap.ndjson
+# A non-compliant benchmark is a security result, not a failed collection run.
+# The structured outcome above is what Grafana and alerting evaluate.
+exit 0

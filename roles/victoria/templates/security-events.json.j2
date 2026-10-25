@@ -1,0 +1,57 @@
+{
+  "uid": "security-events",
+  "title": "Security Events",
+  "tags": ["security", "victorialogs"],
+  "timezone": "utc",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "All security events",
+      "type": "logs",
+      "datasource": "VictoriaLogs",
+      "targets": [{"refId": "A", "expr": "security_tool:*", "queryType": "range"}],
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 0},
+      "options": {"showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "sortOrder": "Descending"}
+    },
+    {
+      "id": 2,
+      "title": "Falco runtime alerts",
+      "type": "logs",
+      "datasource": "VictoriaLogs",
+      "targets": [{"refId": "A", "expr": "security_tool:falco", "queryType": "range"}],
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 12},
+      "options": {"showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "sortOrder": "Descending"}
+    },
+    {
+      "id": 3,
+      "title": "Network detections",
+      "type": "logs",
+      "datasource": "VictoriaLogs",
+      "targets": [{"refId": "A", "expr": "security_tool:(suricata OR zeek)", "queryType": "range"}],
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 12},
+      "options": {"showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "sortOrder": "Descending"}
+    },
+    {
+      "id": 4,
+      "title": "WAF decisions",
+      "type": "logs",
+      "datasource": "VictoriaLogs",
+      "targets": [{"refId": "A", "expr": "security_tool:waf", "queryType": "range"}],
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 22},
+      "options": {"showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "sortOrder": "Descending"}
+    },
+    {
+      "id": 5,
+      "title": "Authentication and bans",
+      "type": "logs",
+      "datasource": "VictoriaLogs",
+      "targets": [{"refId": "A", "expr": "security_tool:(authentication OR authentik OR forgejo OR fail2ban)", "queryType": "range"}],
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 22},
+      "options": {"showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "sortOrder": "Descending"}
+    }
+  ]
+}

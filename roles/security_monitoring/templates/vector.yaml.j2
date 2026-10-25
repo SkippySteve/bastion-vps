@@ -7,7 +7,7 @@ sources:
     include: [/var/log/audit/audit.log]
   security_files:
     type: file
-    include: [/var/log/auth.log, /var/log/sudo.log, /var/log/fail2ban.log, /var/log/trivy/*/events.ndjson, /var/log/rustinel/alerts.json.*, /var/log/suricata/platform/eve-security.json, /var/log/zeek/*/current/*.log]
+    include: [/var/log/auth.log, /var/log/sudo.log, /var/log/fail2ban.log, /var/log/trivy/*/events.ndjson, /var/log/rustinel/alerts.json.*, /var/log/suricata/platform/eve-security.json, /var/log/zeek/*/current/*.log, /var/log/platform-security/*.ndjson]
 transforms:
   normalize:
     type: remap
@@ -15,7 +15,68 @@ transforms:
     source: |-
       .host = "{{ platform_hostname }}"
       .environment = "production"
-      ._msg = to_string(.message) ?? to_string(.MESSAGE) ?? encode_json(.)
+      .message = to_string(.message) ?? to_string(.MESSAGE) ?? encode_json(.)
+      parsed, parse_error = parse_json(.message)
+      if parse_error == null && is_object(parsed) {
+        . = merge(., parsed)
+      }
+
+      # Keep a stable, low-cardinality field on every event.  The detailed
+      # fields in the original record remain available for investigation.
+      .security_tool = "system"
+      .log_type = "journal"
+      if exists(.file) {
+        if contains(string!(.file), "/audit/") {
+          .security_tool = "auditd"
+          .log_type = "audit"
+        } else if contains(string!(.file), "/trivy/") {
+          .security_tool = "trivy"
+          .log_type = "finding"
+        } else if contains(string!(.file), "/rustinel/") {
+          .security_tool = "rustinel"
+          .log_type = "alert"
+        } else if contains(string!(.file), "/suricata/") {
+          .security_tool = "suricata"
+          .log_type = to_string(.event_type) ?? "event"
+        } else if contains(string!(.file), "/zeek/") {
+          .security_tool = "zeek"
+          .log_type = string!(.file)
+        } else if contains(string!(.file), "aide") {
+          .security_tool = "aide"
+          .log_type = "integrity_check"
+        } else if contains(string!(.file), "openscap") {
+          .security_tool = "openscap"
+          .log_type = "compliance_scan"
+        } else if contains(string!(.file), "fail2ban") {
+          .security_tool = "fail2ban"
+          .log_type = "ban_event"
+        } else if contains(string!(.file), "auth") || contains(string!(.file), "sudo") {
+          .security_tool = "authentication"
+          .log_type = "auth_event"
+        }
+      } else if ._SYSTEMD_UNIT == "fail2ban.service" {
+        .security_tool = "fail2ban"
+        .log_type = "ban_event"
+      } else if ._SYSTEMD_UNIT == "auditd.service" {
+        .security_tool = "auditd"
+        .log_type = "audit"
+      } else if ._SYSTEMD_UNIT == "secure-waf.service" {
+        .security_tool = "waf"
+        .log_type = "waf_event"
+      } else if ._SYSTEMD_UNIT == "secure-edge.service" {
+        .security_tool = "traefik"
+        .log_type = "edge_event"
+      } else if ._SYSTEMD_UNIT == "secure-auth.service" {
+        .security_tool = "authentik"
+        .log_type = "auth_event"
+      } else if ._SYSTEMD_UNIT == "secure-forgejo.service" {
+        .security_tool = "forgejo"
+        .log_type = "auth_event"
+      } else if exists(.rule) && exists(.priority) {
+        .security_tool = "falco"
+        .log_type = "runtime_alert"
+      }
+      ._msg = .message
 sinks:
   victorialogs:
     type: http

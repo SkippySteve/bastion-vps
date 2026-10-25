@@ -82,3 +82,46 @@
 
   - Retention defaults follow the selected operating profile, with VictoriaMetrics and VictoriaLogs configured explicitly because their defaults differ.
     VictoriaMetrics retention, VictoriaLogs retention
+
+  ## Security event contract and Grafana filtering
+
+  Tempo stores OTLP traces only. Security logs must be sent to VictoriaLogs, which is
+  the Grafana datasource used for log filtering; a trace or log that includes a
+  `trace_id` may be linked to Tempo from Grafana, but raw log records are not sent to
+  Tempo. Vector assigns every collected record `host`, `environment`,
+  `security_tool`, `log_type`, and `_msg`. The original structured fields are retained.
+
+  Use these LogsQL filters in the VictoriaLogs datasource:
+
+  - `security_tool:falco` — Falco JSON runtime detections: `rule`, `priority`,
+    `output`, `time`, `security_tool=falco`, `log_type=runtime_alert`.
+  - `security_tool:trivy` — NDJSON vulnerability, misconfiguration, secret, scan
+    error, and summary events: `event_type`, `severity`, `finding_id`, `package`,
+    `image_names`, `account`, `status`, and `fingerprint` where applicable.
+  - `security_tool:suricata` — EVE JSON IDS records: `event_type`, `alert.*`,
+    `src_ip`, `dest_ip`, `proto`, `flow_id`, and `log_type=<event_type>`.
+  - `security_tool:zeek` — Zeek JSON network records: the native Zeek fields such as
+    `uid`, `id.orig_h`, `id.resp_h`, `service`, `notice`, and the source log path in
+    `log_type`.
+  - `security_tool:aide` — integrity-check summary: `outcome` (`passed`,
+    `changes_detected`, or `error`), `exit_code`, `report`, and `timestamp`.
+  - `security_tool:openscap` — compliance scan summary: `outcome` (`passed`,
+    `non_compliant`, or `error`), `exit_code`, `report`, and `timestamp`.
+  - `security_tool:auditd`, `security_tool:authentication`, and
+    `security_tool:fail2ban` — original audit/journald fields plus an `audit`,
+    `auth_event`, or `ban_event` `log_type`.
+  - `security_tool:waf`, `security_tool:traefik`, `security_tool:authentik`, and
+    `security_tool:forgejo` — the corresponding rootless stack's journald output;
+    filter further with the native JSON fields or `_msg` for a CrowdSec/ModSecurity
+    decision, edge request, SSO event, or Forgejo authentication event.
+  - `security_tool:rustinel` — native Rustinel alert JSON with
+    `log_type=alert`.
+
+  Grafana provisions two immutable dashboards in the **Security** folder:
+  **Security Events** for the general, Falco, and network-detection streams; and
+  **Vulnerability & Compliance** for Trivy, AIDE, and OpenSCAP results.
+
+  Grafana 12+ bundles compatible Drilldown applications. During a Grafana major
+  upgrade, the Victoria role removes an older externally installed
+  `grafana-exploretraces-app` from the persistent Grafana volume, because it
+  overrides the bundled app and can be incompatible with the server React runtime.

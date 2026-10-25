@@ -110,6 +110,18 @@
     mode: "0700"
   loop: [config, data, grafana]
 
+# Grafana runs as an unprivileged user in the rootless container.  Its
+# provisioned dashboard directory is bind-mounted read-only, so it must be
+# traversable by that user; the JSON files themselves remain non-writable.
+- name: Create the Grafana dashboard provisioning directory
+  ansible.builtin.file:
+    path: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/dashboards"
+    state: directory
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0755"
+  notify: Restart Victoria stack
+
 - name: Render the rootless Victoria Compose stack
   ansible.builtin.template:
     src: compose.yml.j2
@@ -175,6 +187,25 @@
     mode: "0644"
   notify: Restart Victoria stack
 
+- name: Provision Grafana security dashboard provider
+  ansible.builtin.template:
+    src: grafana-dashboard-providers.yml.j2
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/config/grafana-dashboard-providers.yml"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  notify: Restart Victoria stack
+
+- name: Provision Grafana security dashboards
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/var/lib/{{ service_accounts.victoria.name }}/stacks/victoria/dashboards/{{ item }}"
+    owner: "{{ service_accounts.victoria.name }}"
+    group: "{{ service_accounts.victoria.name }}"
+    mode: "0644"
+  loop: [security-events.json, vulnerability-compliance.json]
+  notify: Restart Victoria stack
+
 - name: Configure host OTLP ingest and Victoria exports
   ansible.builtin.template:
     src: host-otelcol.yml.j2
@@ -227,6 +258,71 @@
     name: secure-victoria.service
     enabled: true
     state: started
+
+# `podman-compose up -d` leaves an exited member alone when the systemd
+# oneshot unit is already active.  Start Grafana explicitly before the health
+# check so a previous provisioning failure cannot make the play wait until its
+# timeout after the configuration has been repaired.
+- name: Start Grafana when a previous startup left it exited
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - start
+      - victoria_grafana_1
+  become: true
+  become_user: "{{ service_accounts.victoria.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.victoria.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.victoria.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.victoria.uid }}/bus"
+  register: victoria_grafana_start
+  changed_when: victoria_grafana_start.rc == 0
+  # Podman returns 125 if the named container is already running.
+  failed_when: victoria_grafana_start.rc not in [0, 125]
+
+# Grafana 12+ ships Drilldown apps with the server.  A previously installed
+# copy lives on the persistent Grafana volume and takes precedence over the
+# bundled copy.  The legacy 1.3.x Explore Traces app uses React internals that
+# Grafana 13 no longer exposes, causing Drilldown > Traces to crash.
+- name: Detect a legacy externally installed Traces Drilldown app
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - victoria_grafana_1
+      - test
+      - -d
+      - /var/lib/grafana/plugins/grafana-exploretraces-app
+  become: true
+  become_user: "{{ service_accounts.victoria.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.victoria.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.victoria.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.victoria.uid }}/bus"
+  register: victoria_legacy_traces_app
+  changed_when: false
+  failed_when: false
+
+- name: Remove the legacy externally installed Traces Drilldown app
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - victoria_grafana_1
+      - rm
+      - -rf
+      - /var/lib/grafana/plugins/grafana-exploretraces-app
+  become: true
+  become_user: "{{ service_accounts.victoria.name }}"
+  environment:
+    HOME: "/var/lib/{{ service_accounts.victoria.name }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ service_accounts.victoria.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ service_accounts.victoria.uid }}/bus"
+  when: victoria_legacy_traces_app.rc == 0
+  notify: Restart Victoria stack
+
+- name: Apply the Traces Drilldown compatibility cleanup
+  ansible.builtin.meta: flush_handlers
 
 - name: Enable the Victoria host OpenTelemetry collector
   ansible.builtin.systemd_service:

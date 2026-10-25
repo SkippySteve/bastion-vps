@@ -110,6 +110,9 @@
         - {src: ../roles/victoria/templates/vmagent.yml.j2, dest: vmagent.yml}
         - {src: ../roles/victoria/templates/tempo.yml.j2, dest: tempo.yml}
         - {src: ../roles/victoria/templates/grafana-datasources.yml.j2, dest: grafana-datasources.yml}
+        - {src: ../roles/victoria/templates/grafana-dashboard-providers.yml.j2, dest: grafana-dashboard-providers.yml}
+        - {src: ../roles/victoria/templates/security-events.json.j2, dest: security-events.json}
+        - {src: ../roles/victoria/templates/vulnerability-compliance.json.j2, dest: vulnerability-compliance.json}
         - {src: ../roles/victoria/templates/host-otelcol.yml.j2, dest: victoria-host-otelcol.yml}
         - {src: ../roles/security_monitoring/templates/vector.yaml.j2, dest: vector.yaml}
         - {src: ../roles/sensors/templates/suricata-platform.service.j2, dest: suricata.service}

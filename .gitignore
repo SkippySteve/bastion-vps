@@ -9,3 +9,5 @@ dist/
 __pycache__/
 *.py[cod]
 .cursor/
+tmp/
+.vagrant/

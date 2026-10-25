@@ -42,8 +42,14 @@ services:
     image: {{ victoria_grafana_image }}
     environment:
       GF_SECURITY_ADMIN_PASSWORD: {{ victoria_grafana_admin_password | default('change-me-before-deploy') | to_json }}
-      GF_INSTALL_PLUGINS: victoriametrics-logs-datasource
-    volumes: [grafana:/var/lib/grafana, ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/victoria.yml:ro]
+      # Grafana 13 bundles the Drilldown apps.  Disable its asynchronous
+      # catalog updater so it cannot overwrite those compatible copies on the
+      # persistent volume; install the one external datasource synchronously
+      # before datasource provisioning begins.
+      GF_PLUGINS_PREINSTALL: ""
+      GF_PLUGINS_PREINSTALL_ASYNC: ""
+      GF_PLUGINS_PREINSTALL_SYNC: victoriametrics-logs-datasource
+    volumes: [grafana:/var/lib/grafana, ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/victoria.yml:ro, ./config/grafana-dashboard-providers.yml:/etc/grafana/provisioning/dashboards/security.yml:ro, ./dashboards:/var/lib/grafana/dashboards:ro]
     ports: ["127.0.0.1:{{ victoria_grafana_port }}:3000"]
 volumes:
   victoria-metrics: {}

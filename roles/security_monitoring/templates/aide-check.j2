@@ -1,8 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 mkdir -p /var/lib/platform-aide
+mkdir -p /var/log/platform-security
 if [ ! -f /var/lib/platform-aide/aide.db ]; then
   aideinit
   cp /var/lib/aide/aide.db.new /var/lib/platform-aide/aide.db
 fi
-aide --check --config /etc/aide/aide.conf | tee /var/lib/platform-aide/latest.log
+set +e
+aide --check --config /etc/aide/aide.conf > /var/lib/platform-aide/latest.log 2>&1
+status=$?
+set -e
+outcome=passed
+if [ "$status" -eq 1 ]; then outcome=changes_detected; fi
+if [ "$status" -gt 1 ]; then outcome=error; fi
+printf '{"security_tool":"aide","log_type":"integrity_check","outcome":"%s","exit_code":%s,"report":"%s","timestamp":"%s"}\n' "$outcome" "$status" /var/lib/platform-aide/latest.log "$(date -u +%FT%TZ)" >> /var/log/platform-security/aide.ndjson
+exit "$status"
